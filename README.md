@@ -4,14 +4,14 @@
 
 | | |
 |--|--|
-| 本仓远程 | `git@github.com:TianyuChai-create/quest-crt.git` |
-| 克隆 | `git clone git@github.com:TianyuChai-create/quest-crt.git` |
+| 本仓远程 | `git@github.com:TianyuChai-creature/quest-crt.git` |
+| 克隆 | `git clone git@github.com:TianyuChai-creature/quest-crt.git` |
 
-**生态中的位置**（三仓分工，各自独立 git）：
+**生态中的位置**（三仓分工，各自独立 git；账号均为 **TianyuChai-creature**）：
 
 | 仓库 | 远程 | 职责 |
 |------|------|------|
-| **quest-crt**（本仓） | `git@github.com:TianyuChai-create/quest-crt.git` | Quest WebXR 传感；`:8000` 页面、`:8001` `/ws` + `/ws/stream` |
+| **quest-crt**（本仓） | `git@github.com:TianyuChai-creature/quest-crt.git` | Quest WebXR 传感；`:8000` 页面、`:8001` `/ws` + `/ws/stream` |
 | **real-Teleop** | `git@github.com:TianyuChai-creature/real-Teleop.git` | SEW 臂腕重定向、Meshcat/实机；消费 `/ws` JSON |
 | **DIME** | `git@github.com:TianyuChai-creature/DIME.git` | 手指 21→20 训练与权重；采集/实时消费 `/ws/stream` |
 
