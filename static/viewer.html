@@ -1,0 +1,957 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quest 46-Point Viewer</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        background: #07090e;
+        color: #f4f4f5;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        overflow: hidden;
+        background: #07090e;
+      }
+
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        cursor: grab;
+        touch-action: none;
+      }
+
+      canvas:active {
+        cursor: grabbing;
+      }
+
+      .panel {
+        position: fixed;
+        top: 18px;
+        left: 18px;
+        min-width: 270px;
+        padding: 16px;
+        border: 1px solid #ffffff1a;
+        border-radius: 14px;
+        background: #10131bd9;
+        box-shadow: 0 16px 50px #0008;
+        backdrop-filter: blur(12px);
+        pointer-events: none;
+      }
+
+      h1 {
+        margin: 0 0 12px;
+        font-size: 18px;
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 7px 18px;
+        color: #a1a1aa;
+        font-size: 13px;
+      }
+
+      .value {
+        color: #e4e4e7;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-top: 13px;
+        color: #a1a1aa;
+        font-size: 12px;
+      }
+
+      .dot {
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        margin-right: 5px;
+        border-radius: 50%;
+      }
+
+      .help {
+        position: fixed;
+        right: 856px;
+        bottom: 18px;
+        padding: 10px 13px;
+        border: 1px solid #ffffff14;
+        border-radius: 10px;
+        background: #10131bbf;
+        color: #71717a;
+        font-size: 12px;
+        pointer-events: none;
+      }
+
+      #hover-label {
+        position: fixed;
+        display: none;
+        padding: 7px 9px;
+        border: 1px solid #ffffff20;
+        border-radius: 7px;
+        background: #090b10e8;
+        color: #fafafa;
+        font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+        pointer-events: none;
+        white-space: pre;
+      }
+
+      .coordinates-panel {
+        position: fixed;
+        top: 18px;
+        right: 18px;
+        bottom: 18px;
+        width: 820px;
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+        border: 1px solid #ffffff1a;
+        border-radius: 14px;
+        background: #10131be8;
+        box-shadow: 0 16px 50px #0008;
+        backdrop-filter: blur(12px);
+      }
+
+      .coordinates-header {
+        flex: none;
+        padding: 15px 16px 12px;
+        border-bottom: 1px solid #ffffff12;
+      }
+
+      .coordinates-title {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .coordinates-title h2 {
+        margin: 0;
+        font-size: 15px;
+      }
+
+      .coordinates-seq {
+        color: #71717a;
+        font: 11px ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      .coordinates-note {
+        margin-top: 7px;
+        color: #71717a;
+        font-size: 11px;
+        line-height: 1.45;
+      }
+
+      .coordinates-body {
+        min-height: 0;
+        overflow: auto;
+        padding: 10px 12px 14px;
+        scrollbar-color: #3f3f46 transparent;
+        scrollbar-width: thin;
+      }
+
+      .coordinate-group {
+        margin-bottom: 13px;
+      }
+
+      .coordinate-group:last-child {
+        margin-bottom: 0;
+      }
+
+      .coordinate-columns {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(380px, 1fr));
+        gap: 12px;
+        min-width: 772px;
+      }
+
+      .coordinate-column + .coordinate-column {
+        padding-left: 12px;
+        border-left: 1px solid #ffffff12;
+      }
+
+      .coordinate-group-title {
+        position: sticky;
+        top: -10px;
+        z-index: 1;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 4px 7px;
+        background: #10131bf5;
+        color: #e4e4e7;
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .tracking-state {
+        color: #71717a;
+        font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-weight: 400;
+      }
+
+      .tracking-state.active {
+        color: #4ade80;
+      }
+
+      .coordinate-table {
+        width: 100%;
+        border-collapse: collapse;
+        table-layout: fixed;
+        font: 10.5px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      .coordinate-table col:first-child {
+        width: 126px;
+      }
+
+      .coordinate-table th,
+      .coordinate-table td {
+        padding: 4px 5px;
+        border-bottom: 1px solid #ffffff0a;
+        white-space: nowrap;
+      }
+
+      .coordinate-table th {
+        overflow: hidden;
+        color: #a1a1aa;
+        font-weight: 400;
+        text-align: left;
+        text-overflow: ellipsis;
+      }
+
+      .coordinate-table td {
+        color: #e4e4e7;
+        text-align: right;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .coordinate-table .missing {
+        color: #52525b;
+        text-align: center;
+      }
+
+      .left-accent {
+        color: #38bdf8;
+      }
+
+      .right-accent {
+        color: #f472b6;
+      }
+
+      .elbow-accent {
+        color: #facc15;
+      }
+
+      @media (max-width: 1200px) {
+        .coordinates-panel {
+          top: auto;
+          left: 12px;
+          right: 12px;
+          bottom: 12px;
+          width: auto;
+          height: min(48vh, 480px);
+        }
+
+        .panel {
+          top: 12px;
+          left: 12px;
+          right: 12px;
+          min-width: 0;
+        }
+
+        .help {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+
+    <section class="panel">
+      <h1>Quest · 46-Point Live View</h1>
+      <div class="stats">
+        <span>Viewer WSS</span><span class="value" id="connection">connecting</span>
+        <span>Pose session</span><span class="value" id="session">—</span>
+        <span>Sequence</span><span class="value" id="sequence">—</span>
+        <span>Receive FPS</span><span class="value" id="fps">0.0</span>
+        <span>Visible points</span><span class="value" id="points">0 / 46</span>
+        <span>Default view</span><span class="value">first-person · no mirror</span>
+        <span>Viewer axes</span><span class="value" id="viewer-axes">body: x, y, z</span>
+        <span>Handedness</span><span class="value" id="handedness">right-handed</span>
+      </div>
+      <div class="legend">
+        <span><i class="dot" style="background: #38bdf8"></i>左手</span>
+        <span><i class="dot" style="background: #f472b6"></i>右手</span>
+        <span><i class="dot" style="background: #facc15"></i>双肘</span>
+        <span><i class="dot" style="background: #a3e635"></i>双肩</span>
+        <span><i class="dot" style="background: #ef4444"></i>腕轴 X</span>
+        <span><i class="dot" style="background: #22c55e"></i>腕轴 Y</span>
+        <span><i class="dot" style="background: #3b82f6"></i>腕轴 Z</span>
+      </div>
+    </section>
+
+    <aside class="coordinates-panel" aria-label="转换后的关键点坐标">
+      <header class="coordinates-header">
+        <div class="coordinates-title">
+          <h2>转换后关键点坐标</h2>
+          <span class="coordinates-seq" id="coordinates-seq">等待数据</span>
+        </div>
+        <div class="coordinates-note">
+          wrist / elbow / shoulder：上背部人体坐标 · landmarks：腕部局部坐标 · 单位：m
+        </div>
+      </header>
+      <div class="coordinates-body" id="coordinates-body">
+        <div class="coordinates-note">正在等待 8001 /ws Pose 帧…</div>
+      </div>
+    </aside>
+
+    <div class="help">默认第一人称非镜像 · 拖动旋转 · 滚轮缩放 · 双击复位</div>
+    <div id="hover-label"></div>
+
+    <script type="module">
+      const JOINT_NAMES = [
+        "wrist",
+        "thumb-metacarpal",
+        "thumb-proximal",
+        "thumb-distal",
+        "thumb-tip",
+        "index-proximal",
+        "index-intermediate",
+        "index-distal",
+        "index-tip",
+        "middle-proximal",
+        "middle-intermediate",
+        "middle-distal",
+        "middle-tip",
+        "ring-proximal",
+        "ring-intermediate",
+        "ring-distal",
+        "ring-tip",
+        "pinky-proximal",
+        "pinky-intermediate",
+        "pinky-distal",
+        "pinky-tip",
+      ]
+
+      const HAND_EDGES = [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+        [3, 4],
+        [0, 5],
+        [5, 6],
+        [6, 7],
+        [7, 8],
+        [0, 9],
+        [9, 10],
+        [10, 11],
+        [11, 12],
+        [0, 13],
+        [13, 14],
+        [14, 15],
+        [15, 16],
+        [0, 17],
+        [17, 18],
+        [18, 19],
+        [19, 20],
+        [5, 9],
+        [9, 13],
+        [13, 17],
+      ]
+
+      const COLORS = {
+        left: "#38bdf8",
+        right: "#f472b6",
+        elbowLeft: "#facc15",
+        elbowRight: "#fb923c",
+        shoulderLeft: "#a3e635",
+        shoulderRight: "#f97316",
+      }
+
+      const WRIST_AXIS_LENGTH = 0.11
+      const WRIST_AXES = [
+        { label: "X", direction: [1, 0, 0], color: "#ef4444" },
+        { label: "Y", direction: [0, 1, 0], color: "#22c55e" },
+        { label: "Z", direction: [0, 0, 1], color: "#3b82f6" },
+      ]
+
+      const canvas = document.querySelector("#scene")
+      const context = canvas.getContext("2d")
+      const connectionText = document.querySelector("#connection")
+      const sessionText = document.querySelector("#session")
+      const sequenceText = document.querySelector("#sequence")
+      const fpsText = document.querySelector("#fps")
+      const pointsText = document.querySelector("#points")
+      const axesText = document.querySelector("#viewer-axes")
+      const handednessText = document.querySelector("#handedness")
+      const hoverLabel = document.querySelector("#hover-label")
+      const coordinatesBody = document.querySelector("#coordinates-body")
+      const coordinatesSeq = document.querySelector("#coordinates-seq")
+
+      let socket = null
+      let reconnectTimer = null
+      let frame = null
+      let coordinateMatrix = [
+        [1, 0, 0],
+        [0, 1, 0],
+        [0, 0, 1],
+      ]
+      let coordinateSignature = ""
+      // Projection converts the configured output basis through the body frame
+      // into WebXR-like render axes, preserving a first-person, non-mirrored view.
+      let yaw = 0
+      let pitch = 0
+      let distance = 1.15
+      let target = [0, 1.25, 0.45]
+      let dragging = false
+      let pointerX = 0
+      let pointerY = 0
+      let projectedPoints = []
+      let framesThisInterval = 0
+      let fpsIntervalStart = performance.now()
+      let lastFrameReceivedAt = null
+      let lastCoordinatesRender = -Infinity
+
+      function resize() {
+        const ratio = Math.min(window.devicePixelRatio || 1, 2)
+        canvas.width = Math.round(innerWidth * ratio)
+        canvas.height = Math.round(innerHeight * ratio)
+        context.setTransform(ratio, 0, 0, ratio, 0, 0)
+      }
+
+      function connect() {
+        clearTimeout(reconnectTimer)
+        connectionText.textContent = "connecting"
+        const scheme = location.protocol === "https:" ? "wss" : "ws"
+        const ws = new WebSocket(`${scheme}://${location.host}/ws`)
+        socket = ws
+
+        ws.onopen = () => {
+          if (socket === ws) {
+            connectionText.textContent = "open"
+            lastFrameReceivedAt = performance.now()
+          }
+        }
+        ws.onerror = () => {
+          if (socket === ws) connectionText.textContent = "error"
+        }
+        ws.onclose = () => {
+          if (socket !== ws) return
+          socket = null
+          lastFrameReceivedAt = null
+          connectionText.textContent = "closed"
+          reconnectTimer = setTimeout(connect, 1000)
+        }
+        ws.onmessage = (event) => {
+          try {
+            const nextFrame = JSON.parse(event.data)
+            const coordinate = nextFrame.coordinate_transform
+            const nextSignature = JSON.stringify(coordinate?.axes ?? [])
+            const coordinateChanged = nextSignature !== coordinateSignature
+            if (coordinate?.matrix) coordinateMatrix = coordinate.matrix
+            coordinateSignature = nextSignature
+            frame = nextFrame
+            lastFrameReceivedAt = performance.now()
+            connectionText.textContent = "open"
+            framesThisInterval += 1
+            sessionText.textContent = frame.session_id.slice(0, 8)
+            sequenceText.textContent = String(frame.seq)
+            axesText.textContent = `${nextFrame.reference_space ?? "unknown"} · ${
+              coordinate?.name ?? "unknown"
+            }: ${coordinate?.axes?.join(", ") ?? "unknown"}`
+            handednessText.textContent =
+              coordinate?.determinant < 0 ? "left-handed" : "right-handed"
+            const now = performance.now()
+            if (now - lastCoordinatesRender >= 100) {
+              renderCoordinates(frame)
+              lastCoordinatesRender = now
+            }
+            updateTarget(coordinateChanged)
+            if (coordinateChanged) resetView()
+          } catch {
+            connectionText.textContent = "invalid frame"
+          }
+        }
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&#039;")
+      }
+
+      function formatNumber(value) {
+        return Number.isFinite(value) ? value.toFixed(5) : "—"
+      }
+
+      function vectorRow(label, vector) {
+        const safeLabel = escapeHtml(label)
+        if (!Array.isArray(vector)) {
+          return `<tr><th title="${safeLabel}">${safeLabel}</th><td class="missing" colspan="4">null</td></tr>`
+        }
+        return `<tr>
+          <th title="${safeLabel}">${safeLabel}</th>
+          <td>${formatNumber(vector[0])}</td>
+          <td>${formatNumber(vector[1])}</td>
+          <td>${formatNumber(vector[2])}</td>
+          <td class="missing"></td>
+        </tr>`
+      }
+
+      function handCoordinateGroup(side, hand, elbow, shoulder) {
+        const isLeft = side === "left"
+        const title = isLeft ? "左手 / 左肘 / 左肩" : "右手 / 右肘 / 右肩"
+        const accent = isLeft ? "left-accent" : "right-accent"
+        const landmarks = Array.isArray(hand?.landmarks)
+          ? hand.landmarks
+          : Array.isArray(hand?.points)
+            ? hand.points
+            : []
+        const landmarkRows = Array.from({ length: 21 }, (_, index) =>
+          vectorRow(`${String(index).padStart(2, "0")} ${JOINT_NAMES[index]}`, landmarks[index])
+        ).join("")
+        const orientation = hand?.wrist?.orientation ?? hand?.wrist_orientation
+        const orientationRow = Array.isArray(orientation)
+          ? `<tr>
+              <th title="wrist quaternion">wrist quat</th>
+              <td>${formatNumber(orientation[0])}</td>
+              <td>${formatNumber(orientation[1])}</td>
+              <td>${formatNumber(orientation[2])}</td>
+              <td>${formatNumber(orientation[3])}</td>
+            </tr>`
+          : `<tr><th>wrist quat</th><td class="missing" colspan="4">null</td></tr>`
+
+        return `<section class="coordinate-group coordinate-column">
+          <div class="coordinate-group-title">
+            <span class="${accent}">${title}</span>
+            <span class="tracking-state ${hand?.tracked ? "active" : ""}">
+              ${hand?.tracked ? "TRACKED" : "NOT TRACKED"}
+            </span>
+          </div>
+          <table class="coordinate-table">
+            <colgroup><col /><col /><col /><col /><col /></colgroup>
+            <thead><tr><th>关键点</th><td>X / qx</td><td>Y / qy</td><td>Z / qz</td><td>W / qw</td></tr></thead>
+            <tbody>
+              ${vectorRow("wrist world", hand?.wrist?.position ?? landmarks[0])}
+              ${orientationRow}
+              ${landmarkRows}
+              ${vectorRow(isLeft ? "left elbow" : "right elbow", elbow?.position)}
+              ${vectorRow(isLeft ? "left shoulder" : "right shoulder", shoulder?.position)}
+            </tbody>
+          </table>
+        </section>`
+      }
+
+      function renderCoordinates(nextFrame) {
+        coordinatesSeq.textContent = `seq ${nextFrame.seq ?? "—"}`
+        coordinatesBody.innerHTML = `<div class="coordinate-columns">
+          ${handCoordinateGroup(
+            "left",
+            nextFrame.hands?.left,
+            nextFrame.elbows?.left,
+            nextFrame.shoulders?.left
+          )}
+          ${handCoordinateGroup(
+            "right",
+            nextFrame.hands?.right,
+            nextFrame.elbows?.right,
+            nextFrame.shoulders?.right
+          )}
+        </div>`
+      }
+
+      function allPosePoints() {
+        if (!frame) return []
+        const left = handWorldPoints(frame.hands.left)
+        const right = handWorldPoints(frame.hands.right)
+        return [
+          ...left.filter(Boolean),
+          ...right.filter(Boolean),
+          frame.elbows.left.position,
+          frame.elbows.right.position,
+          frame.shoulders?.left?.position,
+          frame.shoulders?.right?.position,
+        ]
+          .filter(Boolean)
+      }
+
+      function rotateByQuaternion(point, quaternion) {
+        const [x, y, z] = point
+        const [qx, qy, qz, qw] = quaternion
+        const tx = 2 * (qy * z - qz * y)
+        const ty = 2 * (qz * x - qx * z)
+        const tz = 2 * (qx * y - qy * x)
+        return [
+          x + qw * tx + (qy * tz - qz * ty),
+          y + qw * ty + (qz * tx - qx * tz),
+          z + qw * tz + (qx * ty - qy * tx),
+        ]
+      }
+
+      function handWorldPoints(hand) {
+        // Backward-compatible fallback for pose v1 output.
+        if (hand.points) return hand.points
+        const position = hand.wrist?.position
+        const orientation = hand.wrist?.orientation
+        if (!position || !orientation) return hand.landmarks.map(() => null)
+        return hand.landmarks.map((point) => {
+          if (!point) return null
+          const rotated = rotateByQuaternion(point, orientation)
+          return rotated.map((value, index) => value + position[index])
+        })
+      }
+
+      function updateTarget(immediate = false) {
+        const points = allPosePoints()
+        if (!points.length) return
+        const center = points
+          .reduce(
+            (sum, point) => [
+              sum[0] + point[0],
+              sum[1] + point[1],
+              sum[2] + point[2],
+            ],
+            [0, 0, 0]
+          )
+          .map((value) => value / points.length)
+        target = immediate
+          ? center
+          : target.map((value, index) => value * 0.9 + center[index] * 0.1)
+      }
+
+      function sourceToOutput(point) {
+        const sourcePoint =
+          frame?.reference_space === "spine-upper-scapula"
+            ? [-point[2], point[1], point[0]]
+            : point
+        return coordinateMatrix.map(
+          (row) =>
+            row[0] * sourcePoint[0] +
+            row[1] * sourcePoint[1] +
+            row[2] * sourcePoint[2]
+        )
+      }
+
+      function outputToSource(point) {
+        const sourcePoint = [
+          coordinateMatrix[0][0] * point[0] +
+            coordinateMatrix[1][0] * point[1] +
+            coordinateMatrix[2][0] * point[2],
+          coordinateMatrix[0][1] * point[0] +
+            coordinateMatrix[1][1] * point[1] +
+            coordinateMatrix[2][1] * point[2],
+          coordinateMatrix[0][2] * point[0] +
+            coordinateMatrix[1][2] * point[1] +
+            coordinateMatrix[2][2] * point[2],
+        ]
+        return frame?.reference_space === "spine-upper-scapula"
+          ? [sourcePoint[2], sourcePoint[1], -sourcePoint[0]]
+          : sourcePoint
+      }
+
+      function sceneViewportWidth() {
+        return innerWidth > 1200 ? innerWidth - 838 : innerWidth
+      }
+
+      function project(point) {
+        const sourceDelta = outputToSource([
+          point[0] - target[0],
+          point[1] - target[1],
+          point[2] - target[2],
+        ])
+        const x = sourceDelta[0]
+        const y = sourceDelta[1]
+        const z = -sourceDelta[2]
+        const cosYaw = Math.cos(yaw)
+        const sinYaw = Math.sin(yaw)
+        const cosPitch = Math.cos(pitch)
+        const sinPitch = Math.sin(pitch)
+        const rotatedX = cosYaw * x - sinYaw * z
+        const yawZ = sinYaw * x + cosYaw * z
+        const rotatedY = cosPitch * y - sinPitch * yawZ
+        const rotatedZ = sinPitch * y + cosPitch * yawZ
+        const depth = Math.max(0.08, distance + rotatedZ)
+        const viewportWidth = sceneViewportWidth()
+        const focal = Math.min(viewportWidth, innerHeight) * 0.82
+        return {
+          x: viewportWidth / 2 + (rotatedX * focal) / depth,
+          y: innerHeight / 2 - (rotatedY * focal) / depth,
+          depth,
+          scale: focal / depth,
+        }
+      }
+
+      function drawLine3D(a, b, color, width = 1) {
+        const from = project(a)
+        const to = project(b)
+        context.beginPath()
+        context.moveTo(from.x, from.y)
+        context.lineTo(to.x, to.y)
+        context.strokeStyle = color
+        context.lineWidth = width
+        context.stroke()
+      }
+
+      function drawGrid() {
+        const size = 1.5
+        const step = 0.25
+        const sourceTarget = outputToSource(target)
+        const baseX = Math.round(sourceTarget[0] / step) * step
+        const baseZ = Math.round(sourceTarget[2] / step) * step
+        for (let offset = -size; offset <= size + 0.001; offset += step) {
+          drawLine3D(
+            sourceToOutput([baseX - size, 0, baseZ + offset]),
+            sourceToOutput([baseX + size, 0, baseZ + offset]),
+            "#33415555"
+          )
+          drawLine3D(
+            sourceToOutput([baseX + offset, 0, baseZ - size]),
+            sourceToOutput([baseX + offset, 0, baseZ + size]),
+            "#33415555"
+          )
+        }
+
+        const origin = sourceToOutput([
+          sourceTarget[0] - 0.65,
+          Math.max(0.05, sourceTarget[1] - 0.65),
+          sourceTarget[2],
+        ])
+        drawLine3D(origin, [origin[0] + 0.25, origin[1], origin[2]], "#ef4444", 2)
+        drawLine3D(origin, [origin[0], origin[1] + 0.25, origin[2]], "#22c55e", 2)
+        drawLine3D(origin, [origin[0], origin[1], origin[2] + 0.25], "#3b82f6", 2)
+      }
+
+      function drawHand(points, side, color) {
+        for (const [start, end] of HAND_EDGES) {
+          if (points[start] && points[end]) {
+            drawLine3D(points[start], points[end], `${color}b8`, 2.4)
+          }
+        }
+        points.forEach((point, index) => {
+          if (!point) return
+          projectedPoints.push({
+            ...project(point),
+            point,
+            label: `${side}.${JOINT_NAMES[index]}`,
+            color,
+            radius: index === 0 ? 5 : 4,
+          })
+        })
+      }
+
+      function drawWristAxes(hand, fallbackWrist) {
+        if (!hand?.tracked) return
+        const position = hand.wrist?.position ?? fallbackWrist
+        const orientation = hand.wrist?.orientation ?? hand.wrist_orientation
+        if (!Array.isArray(position) || !Array.isArray(orientation)) return
+
+        for (const axis of WRIST_AXES) {
+          const localEndpoint = axis.direction.map((value) => value * WRIST_AXIS_LENGTH)
+          const worldDirection = rotateByQuaternion(localEndpoint, orientation)
+          const endpoint = position.map((value, index) => value + worldDirection[index])
+          drawLine3D(position, endpoint, axis.color, 2.6)
+
+          const projected = project(endpoint)
+          context.save()
+          context.beginPath()
+          context.arc(projected.x, projected.y, 3.2, 0, Math.PI * 2)
+          context.fillStyle = axis.color
+          context.fill()
+          context.font = "600 11px ui-monospace, SFMono-Regular, Menlo, monospace"
+          context.textBaseline = "bottom"
+          context.fillText(axis.label, projected.x + 5, projected.y - 3)
+          context.restore()
+        }
+      }
+
+      function drawElbow(joint, side, wrist, color) {
+        if (!joint?.position) return
+        if (wrist) drawLine3D(joint.position, wrist, `${color}99`, 2)
+        projectedPoints.push({
+          ...project(joint.position),
+          point: joint.position,
+          label: `${side}.elbow`,
+          color,
+          radius: 7,
+        })
+      }
+
+      function drawShoulder(joint, side, elbow, color) {
+        if (!joint?.position) return
+        if (elbow?.position) drawLine3D(joint.position, elbow.position, `${color}99`, 2)
+        projectedPoints.push({
+          ...project(joint.position),
+          point: joint.position,
+          label: `${side}.shoulder`,
+          color,
+          radius: 7,
+        })
+      }
+
+      function draw() {
+        context.clearRect(0, 0, innerWidth, innerHeight)
+        const viewportWidth = sceneViewportWidth()
+        const gradient = context.createRadialGradient(
+          viewportWidth / 2,
+          innerHeight / 2,
+          0,
+          viewportWidth / 2,
+          innerHeight / 2,
+          Math.max(innerWidth, innerHeight) * 0.75
+        )
+        gradient.addColorStop(0, "#111827")
+        gradient.addColorStop(1, "#05070b")
+        context.fillStyle = gradient
+        context.fillRect(0, 0, innerWidth, innerHeight)
+
+        drawGrid()
+        projectedPoints = []
+
+        if (frame) {
+          const left = handWorldPoints(frame.hands.left)
+          const right = handWorldPoints(frame.hands.right)
+          drawHand(left, "left", COLORS.left)
+          drawHand(right, "right", COLORS.right)
+          drawWristAxes(frame.hands.left, left[0])
+          drawWristAxes(frame.hands.right, right[0])
+          drawElbow(frame.elbows.left, "left", left[0], COLORS.elbowLeft)
+          drawElbow(frame.elbows.right, "right", right[0], COLORS.elbowRight)
+          drawShoulder(
+            frame.shoulders?.left,
+            "left",
+            frame.elbows.left,
+            COLORS.shoulderLeft
+          )
+          drawShoulder(
+            frame.shoulders?.right,
+            "right",
+            frame.elbows.right,
+            COLORS.shoulderRight
+          )
+        }
+
+        projectedPoints.sort((a, b) => b.depth - a.depth)
+        for (const point of projectedPoints) {
+          context.beginPath()
+          context.arc(point.x, point.y, point.radius, 0, Math.PI * 2)
+          context.fillStyle = point.color
+          context.shadowBlur = 12
+          context.shadowColor = point.color
+          context.fill()
+          context.shadowBlur = 0
+        }
+        pointsText.textContent = `${projectedPoints.length} / 46`
+
+        const now = performance.now()
+        if (
+          socket?.readyState === WebSocket.OPEN &&
+          lastFrameReceivedAt !== null &&
+          now - lastFrameReceivedAt > 250
+        ) {
+          connectionText.textContent = "stale"
+        }
+        if (now - fpsIntervalStart >= 1000) {
+          fpsText.textContent = (
+            (framesThisInterval * 1000) /
+            (now - fpsIntervalStart)
+          ).toFixed(1)
+          framesThisInterval = 0
+          fpsIntervalStart = now
+        }
+        requestAnimationFrame(draw)
+      }
+
+      canvas.addEventListener("pointerdown", (event) => {
+        dragging = true
+        pointerX = event.clientX
+        pointerY = event.clientY
+        canvas.setPointerCapture(event.pointerId)
+      })
+
+      canvas.addEventListener("pointermove", (event) => {
+        if (dragging) {
+          yaw += (event.clientX - pointerX) * 0.007
+          pitch = Math.max(
+            -Math.PI * 0.48,
+            Math.min(Math.PI * 0.48, pitch + (event.clientY - pointerY) * 0.007)
+          )
+          pointerX = event.clientX
+          pointerY = event.clientY
+          hoverLabel.style.display = "none"
+          return
+        }
+
+        let nearest = null
+        let nearestDistance = 14
+        for (const point of projectedPoints) {
+          const distanceToPointer = Math.hypot(
+            point.x - event.clientX,
+            point.y - event.clientY
+          )
+          if (distanceToPointer < nearestDistance) {
+            nearestDistance = distanceToPointer
+            nearest = point
+          }
+        }
+
+        if (!nearest) {
+          hoverLabel.style.display = "none"
+          return
+        }
+        const [x, y, z] = nearest.point
+        hoverLabel.textContent =
+          `${nearest.label}\n` + `x ${x.toFixed(4)}  y ${y.toFixed(4)}  z ${z.toFixed(4)} m`
+        hoverLabel.style.display = "block"
+        hoverLabel.style.left = `${event.clientX + 14}px`
+        hoverLabel.style.top = `${event.clientY + 14}px`
+      })
+
+      function stopDragging() {
+        dragging = false
+      }
+
+      canvas.addEventListener("pointerup", stopDragging)
+      canvas.addEventListener("pointercancel", stopDragging)
+      canvas.addEventListener(
+        "wheel",
+        (event) => {
+          event.preventDefault()
+          distance = Math.max(0.25, Math.min(4, distance * Math.exp(event.deltaY * 0.001)))
+        },
+        { passive: false }
+      )
+      function resetView() {
+        yaw = 0
+        pitch = 0
+        distance = 1.15
+      }
+
+      canvas.addEventListener("dblclick", resetView)
+
+      addEventListener("resize", resize)
+      resize()
+      connect()
+      requestAnimationFrame(draw)
+    </script>
+  </body>
+</html>

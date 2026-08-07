@@ -1,0 +1,1210 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Quest Hand + Arm Pose</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          sans-serif;
+        background: #101114;
+        color: #f4f4f5;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at top, #243047 0, transparent 42%),
+          #101114;
+      }
+
+      main {
+        width: min(92vw, 520px);
+        padding: 28px;
+        border: 1px solid #ffffff1f;
+        border-radius: 18px;
+        background: #18191ddd;
+        box-shadow: 0 24px 80px #0008;
+      }
+
+      h1 {
+        margin: 0 0 8px;
+        font-size: 26px;
+      }
+
+      p {
+        color: #a1a1aa;
+        line-height: 1.55;
+      }
+
+      button {
+        width: 100%;
+        margin-top: 18px;
+        padding: 14px 18px;
+        border: 0;
+        border-radius: 12px;
+        background: #4f7cff;
+        color: white;
+        font: inherit;
+        font-weight: 650;
+      }
+
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.45;
+      }
+
+      .status {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        gap: 10px;
+        margin-top: 20px;
+        padding: 14px;
+        border-radius: 12px;
+        background: #ffffff0a;
+        font-size: 14px;
+      }
+
+      .value {
+        color: #86efac;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+
+      .hint {
+        margin-top: 14px;
+        padding: 12px 14px;
+        border-radius: 12px;
+        background: #fbbf2418;
+        border: 1px solid #fbbf2433;
+        color: #fde68a;
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      .hint.hidden {
+        display: none;
+      }
+
+      #xr-canvas {
+        position: fixed;
+        width: 1px;
+        height: 1px;
+        opacity: 0;
+        pointer-events: none;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Quest Hand + Arm Pose</h1>
+      <p>
+        读取双手各21个关键点以及左右肩、肘位置，转换为上背部人体坐标后通过低延迟WebRTC发送到PC。
+        为避免接通瞬间姿态差过大：点「开始准备」后先倒计时 3 秒再自动传数（摆姿时无需再点击）。
+      </p>
+
+      <button id="enter-xr" disabled>等待PC连接</button>
+      <p class="hint" id="prep-hint">
+        点击后仅需<strong>一次</strong>操作：进入 XR 后将有 <strong>3 秒</strong>倒计时，
+        请用双手摆成与机械臂相近的姿势。<strong>摆姿期间不要再点击</strong>；倒计时结束自动开始向 PC 传输。
+      </p>
+
+      <div class="status">
+        <span>传输通道</span>
+        <span class="value" id="transport-status">connecting</span>
+        <span>会话</span>
+        <span class="value" id="session-phase">idle</span>
+        <span>WebXR</span>
+        <span class="value" id="xr-status">idle</span>
+        <span>已发送</span>
+        <span class="value" id="sent-count">0</span>
+        <span>本地缓冲丢帧</span>
+        <span class="value" id="drop-count">0</span>
+      </div>
+    </main>
+
+    <canvas id="xr-canvas"></canvas>
+
+    <script type="module">
+      const HAND_JOINTS = [
+        "wrist",
+        "thumb-metacarpal",
+        "thumb-phalanx-proximal",
+        "thumb-phalanx-distal",
+        "thumb-tip",
+        "index-finger-phalanx-proximal",
+        "index-finger-phalanx-intermediate",
+        "index-finger-phalanx-distal",
+        "index-finger-tip",
+        "middle-finger-phalanx-proximal",
+        "middle-finger-phalanx-intermediate",
+        "middle-finger-phalanx-distal",
+        "middle-finger-tip",
+        "ring-finger-phalanx-proximal",
+        "ring-finger-phalanx-intermediate",
+        "ring-finger-phalanx-distal",
+        "ring-finger-tip",
+        "pinky-finger-phalanx-proximal",
+        "pinky-finger-phalanx-intermediate",
+        "pinky-finger-phalanx-distal",
+        "pinky-finger-tip",
+      ]
+
+      const HAND_EDGES = [
+        [0, 1],
+        [1, 2],
+        [2, 3],
+        [3, 4],
+        [0, 5],
+        [5, 6],
+        [6, 7],
+        [7, 8],
+        [0, 9],
+        [9, 10],
+        [10, 11],
+        [11, 12],
+        [0, 13],
+        [13, 14],
+        [14, 15],
+        [15, 16],
+        [0, 17],
+        [17, 18],
+        [18, 19],
+        [19, 20],
+        [5, 9],
+        [9, 13],
+        [13, 17],
+      ]
+
+      const XR_COLORS = {
+        left: [0.22, 0.74, 0.97],
+        right: [0.96, 0.45, 0.71],
+        leftElbow: [0.98, 0.8, 0.08],
+        rightElbow: [0.98, 0.57, 0.24],
+        leftShoulder: [0.64, 0.85, 0.13],
+        rightShoulder: [0.94, 0.42, 0.16],
+      }
+
+      const BINARY_PACKET_SIZE = 628
+      const BODY_FRAME_EPSILON = 1e-6
+      const RTC_PACKET_LIFETIME_MS = 30
+      const WS_MAX_BUFFERED_BYTES = 16 * 1024
+      /** Scheme A: single click → XR → countdown (no pose) → auto stream. No second click. */
+      const PREP_COUNTDOWN_S = 3
+      const PREP_HINT_ZH =
+        "请摆成与机械臂相近的姿势\n双手不要再点击界面"
+      const enterButton = document.querySelector("#enter-xr")
+      const transportStatus = document.querySelector("#transport-status")
+      const sessionPhaseEl = document.querySelector("#session-phase")
+      const xrStatus = document.querySelector("#xr-status")
+      const sentCount = document.querySelector("#sent-count")
+      const dropCount = document.querySelector("#drop-count")
+      const prepHintEl = document.querySelector("#prep-hint")
+
+      let socket = null
+      let peerConnection = null
+      let dataChannel = null
+      let transportKind = null
+      let reconnectTimer = null
+      let connectionAttempt = 0
+      let xrSession = null
+      let sent = 0
+      let dropped = 0
+      let seq = 0
+      let lastUiUpdate = 0
+      /** idle | ready | preparing | streaming */
+      let sessionPhase = "idle"
+      let prepDeadlineMs = 0
+      let poseStreaming = false
+
+      function transportIsOpen() {
+        return (
+          dataChannel?.readyState === "open" || socket?.readyState === WebSocket.OPEN
+        )
+      }
+
+      function setSessionPhase(phase) {
+        sessionPhase = phase
+        if (sessionPhaseEl) sessionPhaseEl.textContent = phase
+      }
+
+      function setConnectionStatus(value) {
+        transportStatus.textContent = value
+        const open = transportIsOpen()
+        enterButton.disabled = !open || xrSession !== null
+        if (!xrSession) {
+          if (!open) {
+            enterButton.textContent = "等待PC连接"
+            setSessionPhase("idle")
+          } else {
+            enterButton.textContent = "开始准备"
+            setSessionPhase("ready")
+          }
+        }
+      }
+
+      function closeCurrentTransport() {
+        const channel = dataChannel
+        const peer = peerConnection
+        const ws = socket
+        dataChannel = null
+        peerConnection = null
+        socket = null
+        transportKind = null
+        try {
+          channel?.close()
+        } catch {}
+        try {
+          peer?.close()
+        } catch {}
+        try {
+          ws?.close()
+        } catch {}
+      }
+
+      function scheduleReconnect() {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = setTimeout(connectTransport, 1000)
+      }
+
+      function waitForIceGathering(peer, timeoutMs = 4000) {
+        if (peer.iceGatheringState === "complete") return Promise.resolve()
+        return new Promise((resolve) => {
+          const timeout = setTimeout(done, timeoutMs)
+          function done() {
+            clearTimeout(timeout)
+            peer.removeEventListener("icegatheringstatechange", changed)
+            resolve()
+          }
+          function changed() {
+            if (peer.iceGatheringState === "complete") done()
+          }
+          peer.addEventListener("icegatheringstatechange", changed)
+        })
+      }
+
+      function waitForDataChannelOpen(channel, timeoutMs = 8000) {
+        if (channel.readyState === "open") return Promise.resolve()
+        return new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => finish(new Error("WebRTC channel timeout")), timeoutMs)
+          function finish(error) {
+            clearTimeout(timeout)
+            channel.removeEventListener("open", opened)
+            channel.removeEventListener("close", closed)
+            error ? reject(error) : resolve()
+          }
+          function opened() {
+            finish()
+          }
+          function closed() {
+            finish(new Error("WebRTC channel closed during setup"))
+          }
+          channel.addEventListener("open", opened)
+          channel.addEventListener("close", closed)
+        })
+      }
+
+      async function connectWebRTC(attempt) {
+        const peer = new RTCPeerConnection({ iceServers: [] })
+        const channel = peer.createDataChannel("pose", {
+          ordered: false,
+          maxPacketLifeTime: RTC_PACKET_LIFETIME_MS,
+        })
+        peerConnection = peer
+        dataChannel = channel
+
+        peer.addEventListener("connectionstatechange", () => {
+          if (peerConnection !== peer) return
+          if (["failed", "closed", "disconnected"].includes(peer.connectionState)) {
+            closeCurrentTransport()
+            setConnectionStatus("WebRTC closed")
+            scheduleReconnect()
+          }
+        })
+
+        const offer = await peer.createOffer()
+        await peer.setLocalDescription(offer)
+        await waitForIceGathering(peer)
+        if (attempt !== connectionAttempt) throw new Error("superseded connection")
+
+        const response = await fetch("/api/webrtc/offer", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sdp: peer.localDescription.sdp,
+            type: peer.localDescription.type,
+          }),
+        })
+        if (!response.ok) throw new Error(`WebRTC offer rejected (${response.status})`)
+        const answer = await response.json()
+        await peer.setRemoteDescription(answer)
+        await waitForDataChannelOpen(channel)
+        if (attempt !== connectionAttempt) throw new Error("superseded connection")
+
+        transportKind = "webrtc"
+        setConnectionStatus("WebRTC open")
+        channel.addEventListener("close", () => {
+          if (dataChannel !== channel) return
+          closeCurrentTransport()
+          setConnectionStatus("WebRTC closed")
+          scheduleReconnect()
+        })
+      }
+
+      function connectWebSocket(attempt) {
+        if (attempt !== connectionAttempt) return
+        setConnectionStatus("WSS fallback connecting")
+        const scheme = location.protocol === "https:" ? "wss" : "ws"
+        const ws = new WebSocket(`${scheme}://${location.host}/ws`)
+        socket = ws
+
+        ws.onopen = () => {
+          if (socket !== ws) return
+          transportKind = "wss"
+          setConnectionStatus("WSS fallback open")
+        }
+        ws.onerror = () => {
+          if (socket === ws) setConnectionStatus("WSS fallback error")
+        }
+        ws.onclose = () => {
+          if (socket !== ws) return
+          socket = null
+          transportKind = null
+          setConnectionStatus("WSS fallback closed")
+          scheduleReconnect()
+        }
+      }
+
+      async function connectTransport() {
+        clearTimeout(reconnectTimer)
+        connectionAttempt += 1
+        const attempt = connectionAttempt
+        closeCurrentTransport()
+        setConnectionStatus("WebRTC connecting")
+        try {
+          await connectWebRTC(attempt)
+        } catch (error) {
+          if (attempt !== connectionAttempt) return
+          try {
+            dataChannel?.close()
+            peerConnection?.close()
+          } catch {}
+          dataChannel = null
+          peerConnection = null
+          connectWebSocket(attempt)
+        }
+      }
+
+      function readPose(frame, space, referenceSpace) {
+        if (!space) return null
+        try {
+          const pose = frame.getPose(space, referenceSpace)
+          if (!pose) return null
+          const { x, y, z } = pose.transform.position
+          const orientation = pose.transform.orientation
+          return {
+            position: [x, y, z],
+            orientation: [
+              orientation.x,
+              orientation.y,
+              orientation.z,
+              orientation.w,
+            ],
+          }
+        } catch {
+          return null
+        }
+      }
+
+      function readPosition(frame, space, referenceSpace) {
+        return readPose(frame, space, referenceSpace)?.position ?? null
+      }
+
+      function readHand(frame, source, referenceSpace) {
+        if (!source?.hand) {
+          return {
+            tracked: false,
+            points: HAND_JOINTS.map(() => null),
+            wrist_orientation: null,
+          }
+        }
+
+        const poses = HAND_JOINTS.map((jointName) => {
+          const jointSpace = source.hand.get(jointName)
+          return readPose(frame, jointSpace, referenceSpace)
+        })
+        const points = poses.map((pose) => pose?.position ?? null)
+        const wristOrientation = poses[0]?.orientation ?? null
+        return {
+          tracked:
+            wristOrientation !== null && points.every((point) => point !== null),
+          points,
+          wrist_orientation: wristOrientation,
+        }
+      }
+
+      function subtractVectors(left, right) {
+        return left.map((value, index) => value - right[index])
+      }
+
+      function dotVectors(left, right) {
+        return left.reduce((sum, value, index) => sum + value * right[index], 0)
+      }
+
+      function crossVectors(left, right) {
+        return [
+          left[1] * right[2] - left[2] * right[1],
+          left[2] * right[0] - left[0] * right[2],
+          left[0] * right[1] - left[1] * right[0],
+        ]
+      }
+
+      function normalizeVector(vector) {
+        const length = Math.hypot(...vector)
+        if (!Number.isFinite(length) || length < BODY_FRAME_EPSILON) return null
+        return vector.map((value) => value / length)
+      }
+
+      function createUpperBackBodyFrame(upperBack, leftScapula, rightScapula) {
+        if (!upperBack || !leftScapula || !rightScapula) return null
+
+        const worldUp = [0, 1, 0]
+        const xAxis = normalizeVector(
+          crossVectors(
+            subtractVectors(leftScapula, upperBack),
+            subtractVectors(rightScapula, upperBack)
+          )
+        )
+        if (!xAxis) return null
+
+        // Keep X equal to the measured plane normal. Choose the closest
+        // orthogonal direction to WebXR up for Y, then complete X×Y=Z.
+        const orthogonalUp = worldUp.map(
+          (value, index) => value - dotVectors(worldUp, xAxis) * xAxis[index]
+        )
+        const yAxis = normalizeVector(orthogonalUp)
+        if (!yAxis) return null
+        const zAxis = normalizeVector(crossVectors(xAxis, yAxis))
+        if (!zAxis) return null
+
+        return {
+          origin: upperBack,
+          matrix: [xAxis, yAxis, zAxis],
+        }
+      }
+
+      function transformPointToBodyFrame(point, bodyFrame) {
+        if (!point) return null
+        const delta = subtractVectors(point, bodyFrame.origin)
+        return bodyFrame.matrix.map((axis) => dotVectors(axis, delta))
+      }
+
+      function quaternionToMatrix([x, y, z, w]) {
+        const length = Math.hypot(x, y, z, w)
+        if (!Number.isFinite(length) || length < BODY_FRAME_EPSILON) return null
+        x /= length
+        y /= length
+        z /= length
+        w /= length
+        return [
+          [1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+          [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+          [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)],
+        ]
+      }
+
+      function multiplyMatrix3(left, right) {
+        return left.map((row) =>
+          right[0].map((_, column) =>
+            row.reduce((sum, value, index) => sum + value * right[index][column], 0)
+          )
+        )
+      }
+
+      function matrixToQuaternion(matrix) {
+        const trace = matrix[0][0] + matrix[1][1] + matrix[2][2]
+        let x
+        let y
+        let z
+        let w
+        if (trace > 0) {
+          const scale = Math.sqrt(trace + 1) * 2
+          x = (matrix[2][1] - matrix[1][2]) / scale
+          y = (matrix[0][2] - matrix[2][0]) / scale
+          z = (matrix[1][0] - matrix[0][1]) / scale
+          w = 0.25 * scale
+        } else if (matrix[0][0] > matrix[1][1] && matrix[0][0] > matrix[2][2]) {
+          const scale = Math.sqrt(1 + matrix[0][0] - matrix[1][1] - matrix[2][2]) * 2
+          x = 0.25 * scale
+          y = (matrix[0][1] + matrix[1][0]) / scale
+          z = (matrix[0][2] + matrix[2][0]) / scale
+          w = (matrix[2][1] - matrix[1][2]) / scale
+        } else if (matrix[1][1] > matrix[2][2]) {
+          const scale = Math.sqrt(1 + matrix[1][1] - matrix[0][0] - matrix[2][2]) * 2
+          x = (matrix[0][1] + matrix[1][0]) / scale
+          y = 0.25 * scale
+          z = (matrix[1][2] + matrix[2][1]) / scale
+          w = (matrix[0][2] - matrix[2][0]) / scale
+        } else {
+          const scale = Math.sqrt(1 + matrix[2][2] - matrix[0][0] - matrix[1][1]) * 2
+          x = (matrix[0][2] + matrix[2][0]) / scale
+          y = (matrix[1][2] + matrix[2][1]) / scale
+          z = 0.25 * scale
+          w = (matrix[1][0] - matrix[0][1]) / scale
+        }
+        const length = Math.hypot(x, y, z, w)
+        if (!Number.isFinite(length) || length < BODY_FRAME_EPSILON) return null
+        const quaternion = [x / length, y / length, z / length, w / length]
+        return quaternion[3] < 0 ? quaternion.map((value) => -value) : quaternion
+      }
+
+      function transformOrientationToBodyFrame(orientation, bodyFrame) {
+        if (!orientation) return null
+        const rotation = quaternionToMatrix(orientation)
+        if (!rotation) return null
+        return matrixToQuaternion(multiplyMatrix3(bodyFrame.matrix, rotation))
+      }
+
+      function transformHandToBodyFrame(hand, bodyFrame) {
+        return {
+          tracked: hand.tracked,
+          points: hand.points.map((point) => transformPointToBodyFrame(point, bodyFrame)),
+          wrist_orientation: transformOrientationToBodyFrame(
+            hand.wrist_orientation,
+            bodyFrame
+          ),
+        }
+      }
+
+      function encodePosePacket(packet) {
+        const buffer = new ArrayBuffer(BINARY_PACKET_SIZE)
+        const view = new DataView(buffer)
+        let offset = 0
+
+        for (const byte of [0x51, 0x43, 0x52, 0x54]) view.setUint8(offset++, byte)
+        view.setUint8(offset++, 3)
+        let flags = 0
+        if (packet.hands.left.tracked) flags |= 1 << 0
+        if (packet.hands.right.tracked) flags |= 1 << 1
+        if (packet.elbows.left.tracked) flags |= 1 << 2
+        if (packet.elbows.right.tracked) flags |= 1 << 3
+        if (packet.shoulders.left.tracked) flags |= 1 << 4
+        if (packet.shoulders.right.tracked) flags |= 1 << 5
+        view.setUint8(offset++, flags)
+        view.setUint16(offset, 0, true)
+        offset += 2
+        view.setUint32(offset, packet.seq, true)
+        offset += 4
+        view.setFloat64(offset, packet.timestamp_ms, true)
+        offset += 8
+        view.setFloat64(offset, packet.capture_epoch_ms, true)
+        offset += 8
+
+        const sessionHex = packet.session_id.replaceAll("-", "")
+        for (let index = 0; index < 16; index += 1) {
+          view.setUint8(offset++, Number.parseInt(sessionHex.slice(index * 2, index * 2 + 2), 16))
+        }
+
+        function writeVector(vector, size) {
+          for (let index = 0; index < size; index += 1) {
+            view.setFloat32(offset, vector?.[index] ?? Number.NaN, true)
+            offset += 4
+          }
+        }
+
+        for (const hand of [packet.hands.left, packet.hands.right]) {
+          for (const point of hand.points) writeVector(point, 3)
+        }
+        for (const hand of [packet.hands.left, packet.hands.right]) {
+          writeVector(hand.wrist_orientation, 4)
+        }
+        writeVector(packet.elbows.left.position, 3)
+        writeVector(packet.elbows.right.position, 3)
+        writeVector(packet.shoulders.left.position, 3)
+        writeVector(packet.shoulders.right.position, 3)
+
+        if (offset !== BINARY_PACKET_SIZE) {
+          throw new Error(`binary pose size mismatch: ${offset}`)
+        }
+        return buffer
+      }
+
+      function multiplyMatrices(left, right) {
+        const result = new Float32Array(16)
+        for (let column = 0; column < 4; column += 1) {
+          for (let row = 0; row < 4; row += 1) {
+            let value = 0
+            for (let index = 0; index < 4; index += 1) {
+              value += left[index * 4 + row] * right[column * 4 + index]
+            }
+            result[column * 4 + row] = value
+          }
+        }
+        return result
+      }
+
+      function createXRRenderer(gl, session) {
+        const vertexSource = `#version 300 es
+          in vec3 aPosition;
+          in vec3 aColor;
+          uniform mat4 uViewProjection;
+          out vec3 vColor;
+          void main() {
+            gl_Position = uViewProjection * vec4(aPosition, 1.0);
+            gl_PointSize = 11.0;
+            vColor = aColor;
+          }
+        `
+        const fragmentSource = `#version 300 es
+          precision mediump float;
+          in vec3 vColor;
+          uniform bool uRoundPoint;
+          out vec4 outColor;
+          void main() {
+            if (uRoundPoint && distance(gl_PointCoord, vec2(0.5)) > 0.5) {
+              discard;
+            }
+            outColor = vec4(vColor, 1.0);
+          }
+        `
+
+        function compileShader(type, source) {
+          const shader = gl.createShader(type)
+          gl.shaderSource(shader, source)
+          gl.compileShader(shader)
+          if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            throw new Error(gl.getShaderInfoLog(shader) || "WebGL shader compilation failed")
+          }
+          return shader
+        }
+
+        const program = gl.createProgram()
+        gl.attachShader(program, compileShader(gl.VERTEX_SHADER, vertexSource))
+        gl.attachShader(program, compileShader(gl.FRAGMENT_SHADER, fragmentSource))
+        gl.linkProgram(program)
+        if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(program) || "WebGL program linking failed")
+        }
+
+        const buffer = gl.createBuffer()
+        const positionLocation = gl.getAttribLocation(program, "aPosition")
+        const colorLocation = gl.getAttribLocation(program, "aColor")
+        const matrixLocation = gl.getUniformLocation(program, "uViewProjection")
+        const roundPointLocation = gl.getUniformLocation(program, "uRoundPoint")
+
+        gl.enable(gl.DEPTH_TEST)
+        gl.enable(gl.BLEND)
+        gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+
+        function addVertex(vertices, point, color) {
+          vertices.push(point[0], point[1], point[2], color[0], color[1], color[2])
+        }
+
+        function addHand(lineVertices, pointVertices, points, color) {
+          for (const [start, end] of HAND_EDGES) {
+            if (!points[start] || !points[end]) continue
+            addVertex(lineVertices, points[start], color)
+            addVertex(lineVertices, points[end], color)
+          }
+          for (const point of points) {
+            if (point) addVertex(pointVertices, point, color)
+          }
+        }
+
+        function addElbow(lineVertices, pointVertices, elbow, wrist, color) {
+          if (!elbow) return
+          addVertex(pointVertices, elbow, color)
+          if (wrist) {
+            addVertex(lineVertices, elbow, color)
+            addVertex(lineVertices, wrist, color)
+          }
+        }
+
+        function addShoulder(lineVertices, pointVertices, shoulder, elbow, color) {
+          if (!shoulder) return
+          addVertex(pointVertices, shoulder, color)
+          if (elbow) {
+            addVertex(lineVertices, shoulder, color)
+            addVertex(lineVertices, elbow, color)
+          }
+        }
+
+        function drawVertices(vertices, mode, viewProjection, roundPoints) {
+          if (!vertices.length) return
+          gl.bindBuffer(gl.ARRAY_BUFFER, buffer)
+          gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(vertices), gl.DYNAMIC_DRAW)
+          gl.useProgram(program)
+          gl.enableVertexAttribArray(positionLocation)
+          gl.enableVertexAttribArray(colorLocation)
+          gl.vertexAttribPointer(positionLocation, 3, gl.FLOAT, false, 24, 0)
+          gl.vertexAttribPointer(colorLocation, 3, gl.FLOAT, false, 24, 12)
+          gl.uniformMatrix4fv(matrixLocation, false, viewProjection)
+          gl.uniform1i(roundPointLocation, roundPoints ? 1 : 0)
+          gl.drawArrays(mode, 0, vertices.length / 6)
+        }
+
+        // Offscreen canvas for countdown / hint HUD (text → texture → quad)
+        const hudCanvas = document.createElement("canvas")
+        hudCanvas.width = 1024
+        hudCanvas.height = 512
+        const hudCtx = hudCanvas.getContext("2d")
+        const hudTexture = gl.createTexture()
+        gl.bindTexture(gl.TEXTURE_2D, hudTexture)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE)
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE)
+
+        const hudVs = compileShader(
+          gl.VERTEX_SHADER,
+          `#version 300 es
+          uniform mat4 uViewProjection;
+          in vec3 aPosition;
+          in vec2 aUv;
+          out vec2 vUv;
+          void main() {
+            vUv = aUv;
+            gl_Position = uViewProjection * vec4(aPosition, 1.0);
+          }`
+        )
+        const hudFs = compileShader(
+          gl.FRAGMENT_SHADER,
+          `#version 300 es
+          precision mediump float;
+          uniform sampler2D uTex;
+          in vec2 vUv;
+          out vec4 outColor;
+          void main() {
+            outColor = texture(uTex, vUv);
+            if (outColor.a < 0.05) discard;
+          }`
+        )
+        const hudProgram = gl.createProgram()
+        gl.attachShader(hudProgram, hudVs)
+        gl.attachShader(hudProgram, hudFs)
+        gl.linkProgram(hudProgram)
+        if (!gl.getProgramParameter(hudProgram, gl.LINK_STATUS)) {
+          throw new Error(gl.getProgramInfoLog(hudProgram) || "HUD program link failed")
+        }
+        const hudBuffer = gl.createBuffer()
+        const hudPosLoc = gl.getAttribLocation(hudProgram, "aPosition")
+        const hudUvLoc = gl.getAttribLocation(hudProgram, "aUv")
+        const hudMatrixLoc = gl.getUniformLocation(hudProgram, "uViewProjection")
+        const hudTexLoc = gl.getUniformLocation(hudProgram, "uTex")
+
+        function paintHud(countdownSec, hintLines) {
+          const w = hudCanvas.width
+          const h = hudCanvas.height
+          hudCtx.clearRect(0, 0, w, h)
+          // panel
+          hudCtx.fillStyle = "rgba(16, 17, 20, 0.72)"
+          hudCtx.strokeStyle = "rgba(79, 124, 255, 0.85)"
+          hudCtx.lineWidth = 8
+          roundRect(hudCtx, 40, 40, w - 80, h - 80, 36)
+          hudCtx.fill()
+          hudCtx.stroke()
+          // big number
+          hudCtx.fillStyle = "#fde68a"
+          hudCtx.font = "bold 280px ui-sans-serif, system-ui, sans-serif"
+          hudCtx.textAlign = "center"
+          hudCtx.textBaseline = "middle"
+          hudCtx.fillText(String(countdownSec), w / 2, h * 0.42)
+          // hint
+          hudCtx.fillStyle = "#e4e4e7"
+          hudCtx.font = "600 42px ui-sans-serif, system-ui, sans-serif"
+          const lines = hintLines.split("\n")
+          lines.forEach((line, i) => {
+            hudCtx.fillText(line, w / 2, h * 0.72 + i * 52)
+          })
+          gl.bindTexture(gl.TEXTURE_2D, hudTexture)
+          gl.texImage2D(
+            gl.TEXTURE_2D,
+            0,
+            gl.RGBA,
+            gl.RGBA,
+            gl.UNSIGNED_BYTE,
+            hudCanvas
+          )
+        }
+
+        function roundRect(ctx, x, y, w, h, r) {
+          ctx.beginPath()
+          ctx.moveTo(x + r, y)
+          ctx.arcTo(x + w, y, x + w, y + h, r)
+          ctx.arcTo(x + w, y + h, x, y + h, r)
+          ctx.arcTo(x, y + h, x, y, r)
+          ctx.arcTo(x, y, x + w, y, r)
+          ctx.closePath()
+        }
+
+        function drawHudQuad(viewProjection, headMatrix) {
+          // Place a 0.9m x 0.45m quad ~1.4m in front of the head
+          const m = headMatrix
+          // columns of matrix are axes in WebXR column-major
+          const px = m[12] - m[8] * 1.4
+          const py = m[13] - m[9] * 1.4 + 0.05
+          const pz = m[14] - m[10] * 1.4
+          const rx = m[0]
+          const ry = m[1]
+          const rz = m[2]
+          const uy = m[4]
+          const uy2 = m[5]
+          const uy3 = m[6]
+          const hw = 0.55
+          const hh = 0.28
+          // corners: center ± right*hw ± up*hh
+          function corner(sx, sy) {
+            return [
+              px + rx * sx * hw + uy * sy * hh,
+              py + ry * sx * hw + uy2 * sy * hh,
+              pz + rz * sx * hw + uy3 * sy * hh,
+            ]
+          }
+          const c00 = corner(-1, -1)
+          const c10 = corner(1, -1)
+          const c11 = corner(1, 1)
+          const c01 = corner(-1, 1)
+          // two triangles, pos+uv
+          const data = new Float32Array([
+            ...c00, 0, 1,
+            ...c10, 1, 1,
+            ...c11, 1, 0,
+            ...c00, 0, 1,
+            ...c11, 1, 0,
+            ...c01, 0, 0,
+          ])
+          gl.bindBuffer(gl.ARRAY_BUFFER, hudBuffer)
+          gl.bufferData(gl.ARRAY_BUFFER, data, gl.DYNAMIC_DRAW)
+          gl.useProgram(hudProgram)
+          gl.enableVertexAttribArray(hudPosLoc)
+          gl.enableVertexAttribArray(hudUvLoc)
+          gl.vertexAttribPointer(hudPosLoc, 3, gl.FLOAT, false, 20, 0)
+          gl.vertexAttribPointer(hudUvLoc, 2, gl.FLOAT, false, 20, 12)
+          gl.uniformMatrix4fv(hudMatrixLoc, false, viewProjection)
+          gl.activeTexture(gl.TEXTURE0)
+          gl.bindTexture(gl.TEXTURE_2D, hudTexture)
+          gl.uniform1i(hudTexLoc, 0)
+          gl.depthMask(false)
+          gl.drawArrays(gl.TRIANGLES, 0, 6)
+          gl.depthMask(true)
+        }
+
+        let lastHudKey = ""
+
+        return {
+          render(
+            frame,
+            referenceSpace,
+            leftPoints,
+            rightPoints,
+            leftElbow,
+            rightElbow,
+            leftShoulder,
+            rightShoulder,
+            hud
+          ) {
+            const viewerPose = frame.getViewerPose(referenceSpace)
+            if (!viewerPose) return
+
+            const lineVertices = []
+            const pointVertices = []
+            addHand(lineVertices, pointVertices, leftPoints, XR_COLORS.left)
+            addHand(lineVertices, pointVertices, rightPoints, XR_COLORS.right)
+            addElbow(
+              lineVertices,
+              pointVertices,
+              leftElbow,
+              leftPoints[0],
+              XR_COLORS.leftElbow
+            )
+            addElbow(
+              lineVertices,
+              pointVertices,
+              rightElbow,
+              rightPoints[0],
+              XR_COLORS.rightElbow
+            )
+            addShoulder(
+              lineVertices,
+              pointVertices,
+              leftShoulder,
+              leftElbow,
+              XR_COLORS.leftShoulder
+            )
+            addShoulder(
+              lineVertices,
+              pointVertices,
+              rightShoulder,
+              rightElbow,
+              XR_COLORS.rightShoulder
+            )
+
+            const baseLayer = session.renderState.baseLayer
+            gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer)
+            gl.clearColor(0, 0, 0, 0)
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+
+            if (hud && hud.show) {
+              const key = `${hud.countdown}|${hud.hint}`
+              if (key !== lastHudKey) {
+                paintHud(hud.countdown, hud.hint)
+                lastHudKey = key
+              }
+            }
+
+            for (const view of viewerPose.views) {
+              const viewport = baseLayer.getViewport(view)
+              gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height)
+              const viewProjection = multiplyMatrices(
+                view.projectionMatrix,
+                view.transform.inverse.matrix
+              )
+              drawVertices(lineVertices, gl.LINES, viewProjection, false)
+              drawVertices(pointVertices, gl.POINTS, viewProjection, true)
+              if (hud && hud.show) {
+                drawHudQuad(viewProjection, view.transform.matrix)
+              }
+            }
+          },
+        }
+      }
+
+      async function enterXR() {
+        if (!navigator.xr) {
+          xrStatus.textContent = "unsupported"
+          return
+        }
+
+        try {
+          const supported = await navigator.xr.isSessionSupported("immersive-ar")
+          if (!supported) {
+            xrStatus.textContent = "immersive-ar unsupported"
+            return
+          }
+
+          xrStatus.textContent = "requesting"
+          const session = await navigator.xr.requestSession("immersive-ar", {
+            requiredFeatures: ["local-floor", "hand-tracking"],
+            optionalFeatures: ["body-tracking"],
+          })
+          xrSession = session
+          enterButton.disabled = true
+          poseStreaming = false
+          setSessionPhase("preparing")
+          prepDeadlineMs = performance.now() + PREP_COUNTDOWN_S * 1000
+          if (prepHintEl) prepHintEl.classList.add("hidden")
+
+          const canvas = document.querySelector("#xr-canvas")
+          const gl = canvas.getContext("webgl2", {
+            xrCompatible: true,
+            alpha: true,
+            antialias: false,
+          })
+          if (!gl) throw new Error("WebGL2 is unavailable")
+          if (gl.makeXRCompatible) await gl.makeXRCompatible()
+
+          session.updateRenderState({
+            baseLayer: new XRWebGLLayer(session, gl),
+          })
+          const referenceSpace = await session.requestReferenceSpace("local-floor")
+          const renderer = createXRRenderer(gl, session)
+          const sessionId = crypto.randomUUID()
+          seq = 0
+          sent = 0
+          dropped = 0
+          xrStatus.textContent = "running"
+
+          session.addEventListener("end", () => {
+            xrSession = null
+            poseStreaming = false
+            prepDeadlineMs = 0
+            xrStatus.textContent = "ended"
+            setSessionPhase(transportIsOpen() ? "ready" : "idle")
+            enterButton.disabled = !transportIsOpen()
+            enterButton.textContent = transportIsOpen() ? "重新准备" : "等待PC连接"
+            if (prepHintEl) prepHintEl.classList.remove("hidden")
+          })
+
+          function onXRFrame(timestamp, frame) {
+            if (xrSession !== session) return
+            session.requestAnimationFrame(onXRFrame)
+
+            const sources = Array.from(session.inputSources)
+            const leftSource = sources.find(
+              (source) => source.handedness === "left" && source.hand
+            )
+            const rightSource = sources.find(
+              (source) => source.handedness === "right" && source.hand
+            )
+
+            const leftHand = readHand(frame, leftSource, referenceSpace)
+            const rightHand = readHand(frame, rightSource, referenceSpace)
+            const body = frame.body
+            const leftElbow = readPosition(
+              frame,
+              body?.get("left-arm-lower"),
+              referenceSpace
+            )
+            const rightElbow = readPosition(
+              frame,
+              body?.get("right-arm-lower"),
+              referenceSpace
+            )
+            const leftShoulder = readPosition(
+              frame,
+              body?.get("left-arm-upper"),
+              referenceSpace
+            )
+            const rightShoulder = readPosition(
+              frame,
+              body?.get("right-arm-upper"),
+              referenceSpace
+            )
+            const upperBack = readPosition(
+              frame,
+              body?.get("spine-upper"),
+              referenceSpace
+            )
+            const leftScapula = readPosition(
+              frame,
+              body?.get("left-scapula"),
+              referenceSpace
+            )
+            const rightScapula = readPosition(
+              frame,
+              body?.get("right-scapula"),
+              referenceSpace
+            )
+
+            // Scheme A: countdown before any pose leaves the headset
+            const nowMs = performance.now()
+            const remainingMs = prepDeadlineMs - nowMs
+            const inPrep = !poseStreaming && remainingMs > 0
+            if (!poseStreaming && remainingMs <= 0) {
+              poseStreaming = true
+              setSessionPhase("streaming")
+              xrStatus.textContent = "streaming"
+            }
+            const countdownSec = inPrep
+              ? Math.max(1, Math.ceil(remainingMs / 1000))
+              : 0
+
+            renderer.render(
+              frame,
+              referenceSpace,
+              leftHand.points,
+              rightHand.points,
+              leftElbow,
+              rightElbow,
+              leftShoulder,
+              rightShoulder,
+              inPrep
+                ? { show: true, countdown: countdownSec, hint: PREP_HINT_ZH }
+                : { show: false }
+            )
+
+            // Do not send poses until countdown finished (hands free to pose)
+            if (!poseStreaming) {
+              if (timestamp - lastUiUpdate >= 250) {
+                lastUiUpdate = timestamp
+                sentCount.textContent = String(sent)
+                dropCount.textContent = String(dropped)
+                xrStatus.textContent = inPrep ? `准备中 ${countdownSec}s` : "starting"
+              }
+              return
+            }
+
+            const rtc = dataChannel?.readyState === "open" ? dataChannel : null
+            const ws = socket?.readyState === WebSocket.OPEN ? socket : null
+            if (!rtc && !ws) return
+            const bodyCoordinateFrame = createUpperBackBodyFrame(
+              upperBack,
+              leftScapula,
+              rightScapula
+            )
+            if (!bodyCoordinateFrame) return
+            const frameSeq = ++seq
+            const bufferedAmount = rtc?.bufferedAmount ?? ws?.bufferedAmount ?? 0
+            const transportIsBackpressured = rtc
+              ? bufferedAmount > 0
+              : bufferedAmount >= WS_MAX_BUFFERED_BYTES
+            if (transportIsBackpressured) {
+              dropped += 1
+              return
+            }
+
+            const packet = {
+              type: "pose",
+              version: 4,
+              session_id: sessionId,
+              seq: frameSeq,
+              timestamp_ms: timestamp,
+              capture_epoch_ms: performance.timeOrigin + timestamp,
+              reference_space: "spine-upper-scapula",
+              units: "meters",
+              hands: {
+                left: transformHandToBodyFrame(leftHand, bodyCoordinateFrame),
+                right: transformHandToBodyFrame(rightHand, bodyCoordinateFrame),
+              },
+              elbows: {
+                left: {
+                  tracked: leftElbow !== null,
+                  position: transformPointToBodyFrame(leftElbow, bodyCoordinateFrame),
+                },
+                right: {
+                  tracked: rightElbow !== null,
+                  position: transformPointToBodyFrame(rightElbow, bodyCoordinateFrame),
+                },
+              },
+              shoulders: {
+                left: {
+                  tracked: leftShoulder !== null,
+                  position: transformPointToBodyFrame(leftShoulder, bodyCoordinateFrame),
+                },
+                right: {
+                  tracked: rightShoulder !== null,
+                  position: transformPointToBodyFrame(rightShoulder, bodyCoordinateFrame),
+                },
+              },
+            }
+            if (rtc) {
+              rtc.send(encodePosePacket(packet))
+            } else {
+              ws.send(JSON.stringify(packet))
+            }
+            sent += 1
+
+            if (timestamp - lastUiUpdate >= 250) {
+              lastUiUpdate = timestamp
+              sentCount.textContent = String(sent)
+              dropCount.textContent = String(dropped)
+            }
+          }
+
+          session.requestAnimationFrame(onXRFrame)
+        } catch (error) {
+          xrSession = null
+          poseStreaming = false
+          prepDeadlineMs = 0
+          xrStatus.textContent = `error: ${error instanceof Error ? error.message : error}`
+          setSessionPhase(transportIsOpen() ? "ready" : "idle")
+          enterButton.disabled = !transportIsOpen()
+          enterButton.textContent = transportIsOpen() ? "开始准备" : "等待PC连接"
+          if (prepHintEl) prepHintEl.classList.remove("hidden")
+        }
+      }
+
+      enterButton.addEventListener("click", enterXR)
+      connectTransport()
+    </script>
+  </body>
+</html>

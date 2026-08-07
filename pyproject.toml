@@ -1,0 +1,15 @@
+[project]
+name = "quest-crt"
+version = "0.1.0"
+description = "Minimal standalone Quest XRHand, shoulder, and elbow pose streamer"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "aiortc>=1.13.0",
+    "cryptography>=44.0.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.34.0",
+]
+
+[tool.ruff]
+line-length = 100
