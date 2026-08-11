@@ -37,10 +37,18 @@ from quest_crt.stable_stream import StreamClock
 from quest_crt.stream_protocol import encode_stream_envelope
 from quest_crt.stream_udp import UdpStreamPublisher
 from quest_crt.telemetry import IngressTelemetry, StatusReporter, build_health_report
+from quest_crt.transport_session import (
+    ChannelLease,
+    TransportSessionError,
+    TransportSessionManager,
+    validate_transport_session_id,
+)
+from quest_crt.video_app import VIDEO_PORT, build_video_app
 
 ROOT = Path(__file__).resolve().parent
-INDEX_HTML = ROOT / "static" / "index.html"
-VIEWER_HTML = ROOT / "static" / "viewer.html"
+STATIC_DIR = ROOT / "quest_crt" / "static"
+INDEX_HTML = STATIC_DIR / "index.html"
+VIEWER_HTML = STATIC_DIR / "viewer.html"
 CERT_DIR = ROOT / "certs"
 CERT_FILE = CERT_DIR / "cert.pem"
 KEY_FILE = CERT_DIR / "key.pem"
@@ -433,6 +441,7 @@ class WebRTCOffer(BaseModel):
 
     sdp: str = Field(min_length=1)
     type: Literal["offer"]
+    transport_session_id: str = Field(min_length=1, max_length=64)
 
 
 class PoseSourceBusyError(RuntimeError):
@@ -483,16 +492,27 @@ class ActivePoseSource:
 
 
 active_pose_source = ActivePoseSource()
+transport_sessions = TransportSessionManager()
+video_app = build_video_app(transport_sessions)
 
 
 class PoseStreamProcessor:
     """Shared validation, metrics, logging, and publication for WSS/WebRTC."""
 
-    def __init__(self, transport: str, client_name: str) -> None:
+    def __init__(
+        self,
+        transport: str,
+        client_name: str,
+        transport_session_id: str | None = None,
+        lease: ChannelLease | None = None,
+    ) -> None:
         self._transport = transport
         self._client_name = client_name
+        self._transport_session_id = transport_session_id
+        self._lease = lease
         if not active_pose_source.acquire(self, transport, client_name):
             active = active_pose_source.describe()
+            self._release_lease()
             raise PoseSourceBusyError(
                 f"active Quest is {active['client']} via {active['transport']}"
             )
@@ -505,6 +525,7 @@ class PoseStreamProcessor:
                 self._pose_log = AsyncPoseLog(LOG_DIR, stamp, log_retention)
         except BaseException:
             active_pose_source.release(self)
+            self._release_lease()
             raise
 
         self._session_id: str | None = None
@@ -542,6 +563,7 @@ class PoseStreamProcessor:
             if self._pose_log is not None:
                 self._pose_log.close()
             active_pose_source.release(self)
+            self._release_lease()
             raise
 
     def process(
@@ -596,6 +618,7 @@ class PoseStreamProcessor:
             if self._pose_log is not None:
                 self._pose_log.close()
             active_pose_source.release(self)
+            self._release_lease()
             ingress_telemetry.clear()
             print(
                 f"Quest disconnected: {self._client_name} via {self._transport}",
@@ -620,6 +643,9 @@ class PoseStreamProcessor:
                 flush=True,
             )
             return
+
+        if self._transport_session_id is not None:
+            transport_sessions.touch(self._transport_session_id)
 
         if frame.session_id != self._session_id:
             self._session_id = frame.session_id
@@ -688,6 +714,12 @@ class PoseStreamProcessor:
             )
             self._interval_received = 0
             self._interval_started = now
+
+    def _release_lease(self) -> None:
+        """Release the transport-session lease, if held. Idempotent."""
+        if self._lease is not None:
+            transport_sessions.end_channel(self._lease)
+            self._lease = None
 
     def close(self) -> None:
         with self._condition:
@@ -843,6 +875,11 @@ def _compose_health() -> dict[str, Any]:
         lag_warn_ms=EVENT_LOOP_LAG_WARN_AFTER * 1000,
         pose_age_warn_ms=VIEWER_SOURCE_STALE_AFTER * 1000,
     )
+    report["transport_sessions"] = transport_sessions.describe()
+    report["video"] = {
+        "port": VIDEO_PORT,
+        "registry": video_app.registry.describe(),
+    }
     report["stable_stream"] = {
         **report["stable_stream"],
         "ws_format_default": STREAM_WS_FORMAT,
@@ -1049,6 +1086,13 @@ async def health() -> dict[str, Any]:
 @app.post("/api/webrtc/offer")
 async def webrtc_offer(offer: WebRTCOffer, request: Request) -> dict[str, str]:
     """Answer a browser offer for an unordered, unreliable pose data channel."""
+    try:
+        validate_transport_session_id(offer.transport_session_id)
+    except TransportSessionError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid transport_session_id: {exc}",
+        ) from exc
     active = active_pose_source.describe()
     if active["active"]:
         raise HTTPException(
@@ -1071,8 +1115,21 @@ async def webrtc_offer(offer: WebRTCOffer, request: Request) -> dict[str, str]:
             channel.close()
             return
         try:
-            processor = PoseStreamProcessor("webrtc", client_name)
+            lease = transport_sessions.begin_channel(
+                offer.transport_session_id, "pose", client_name
+            )
+            processor = PoseStreamProcessor(
+                "webrtc",
+                client_name,
+                transport_session_id=offer.transport_session_id,
+                lease=lease,
+            )
         except PoseSourceBusyError as exc:
+            print(f"Rejected Quest via WebRTC from {client_name}: {exc}", flush=True)
+            channel.close()
+            asyncio.create_task(close_webrtc_peer(peer))
+            return
+        except TransportSessionError as exc:
             print(f"Rejected Quest via WebRTC from {client_name}: {exc}", flush=True)
             channel.close()
             asyncio.create_task(close_webrtc_peer(peer))
@@ -1312,8 +1369,26 @@ async def viewer_websocket(websocket: WebSocket) -> None:
 async def pose_websocket(websocket: WebSocket) -> None:
     client = websocket.client
     client_name = f"{client.host}:{client.port}" if client else "unknown"
+    transport_session_id = (websocket.query_params.get("tsid") or "").strip()
     try:
-        processor = PoseStreamProcessor("wss", client_name)
+        validate_transport_session_id(transport_session_id)
+        lease = transport_sessions.begin_channel(
+            transport_session_id, "pose", client_name
+        )
+    except TransportSessionError as exc:
+        print(
+            f"Rejected Quest via WSS from {client_name}: invalid tsid ({exc})",
+            flush=True,
+        )
+        await websocket.close(code=1008, reason="transport_session_id required")
+        return
+    try:
+        processor = PoseStreamProcessor(
+            "wss",
+            client_name,
+            transport_session_id=transport_session_id,
+            lease=lease,
+        )
     except PoseSourceBusyError as exc:
         print(f"Rejected Quest via WSS from {client_name}: {exc}", flush=True)
         await websocket.close(code=1008, reason="another Quest is already active")
@@ -1376,6 +1451,11 @@ def main() -> None:
             flush=True,
         )
     print(f"Health:     https://{lan_ip}:{PORT}/health", flush=True)
+    print(
+        f"Video signaling: https://{lan_ip}:{VIDEO_PORT}/ "
+        f"(POST /api/webrtc/video/offer)",
+        flush=True,
+    )
     print(f"Certificate: {CERT_FILE}", flush=True)
     if POSE_LOG_ENABLED:
         print(
@@ -1399,6 +1479,20 @@ def main() -> None:
         daemon=True,
     )
     viewer_thread.start()
+
+    video_thread = threading.Thread(
+        target=uvicorn.run,
+        kwargs={
+            "app": video_app,
+            "host": HOST,
+            "port": VIDEO_PORT,
+            "ssl_certfile": str(CERT_FILE),
+            "ssl_keyfile": str(KEY_FILE),
+        },
+        name="quest-crt-video",
+        daemon=True,
+    )
+    video_thread.start()
 
     uvicorn.run(
         app,

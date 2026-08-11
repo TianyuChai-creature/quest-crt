@@ -4,7 +4,12 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from server import PoseSourceBusyError, PoseStreamProcessor, active_pose_source
+from server import (
+    PoseSourceBusyError,
+    PoseStreamProcessor,
+    active_pose_source,
+    transport_sessions,
+)
 
 
 class LatestIngressTests(unittest.TestCase):
@@ -94,6 +99,56 @@ class LatestIngressTests(unittest.TestCase):
 
         sequences = [int.from_bytes(message[8:12], "little") for message in processed]
         self.assertEqual(sequences, [1, 3])
+
+
+class TransportSessionLeaseTests(unittest.TestCase):
+    """PoseStreamProcessor owns its transport-session lease lifecycle.
+
+    The global ``transport_sessions`` singleton is shared across tests and
+    empty entries linger until their (real-clock) lease passes, so these
+    tests assert on the specific session entry instead of global counts.
+    """
+
+    def _session_channels(self, tsid: str) -> list[str] | None:
+        for session in transport_sessions.describe()["sessions"]:
+            if session["transport_session_id"] == tsid:
+                return session["channels"]
+        return None
+
+    def test_processor_releases_lease_on_close(self) -> None:
+        with patch("server.POSE_LOG_ENABLED", False):
+            lease = transport_sessions.begin_channel("ts-lease-1", "pose", "quest-a")
+            self.assertEqual(self._session_channels("ts-lease-1"), ["pose"])
+
+            processor = PoseStreamProcessor(
+                "webrtc", "quest-a", transport_session_id="ts-lease-1", lease=lease
+            )
+            processor.close()
+            processor.wait_closed(timeout=1)
+
+        # The lease token was released; the empty session entry lingers
+        # until the lease window passes (real clock, so not yet reaped).
+        self.assertEqual(self._session_channels("ts-lease-1"), [])
+
+    def test_busy_rejection_releases_lease(self) -> None:
+        with patch("server.POSE_LOG_ENABLED", False):
+            first = PoseStreamProcessor("webrtc", "quest-a")
+            try:
+                lease = transport_sessions.begin_channel("ts-lease-2", "pose", "quest-b")
+                self.assertEqual(self._session_channels("ts-lease-2"), ["pose"])
+                with self.assertRaises(PoseSourceBusyError):
+                    PoseStreamProcessor(
+                        "wss",
+                        "quest-b",
+                        transport_session_id="ts-lease-2",
+                        lease=lease,
+                    )
+                # The rejected processor released its lease inside __init__;
+                # the empty session entry lingers (avoids reconnect churn).
+                self.assertEqual(self._session_channels("ts-lease-2"), [])
+            finally:
+                first.close()
+                first.wait_closed(timeout=1)
 
 
 if __name__ == "__main__":

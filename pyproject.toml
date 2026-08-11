@@ -1,3 +1,7 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "quest-crt"
 version = "0.1.0"
@@ -11,5 +15,22 @@ dependencies = [
     "uvicorn[standard]>=0.34.0",
 ]
 
+[project.scripts]
+quest-crt-server = "server:main"
+
+[tool.setuptools]
+py-modules = ["server"]
+
+[tool.setuptools.packages.find]
+include = ["quest_crt*"]
+
+[tool.setuptools.package-data]
+quest_crt = ["static/*.html"]
+
 [tool.ruff]
 line-length = 100
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+]

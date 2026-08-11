@@ -125,6 +125,8 @@
         <span class="value" id="session-phase">idle</span>
         <span>WebXR</span>
         <span class="value" id="xr-status">idle</span>
+        <span>视频</span>
+        <span class="value" id="video-status">off</span>
         <span>已发送</span>
         <span class="value" id="sent-count">0</span>
         <span>本地缓冲丢帧</span>
@@ -206,16 +208,326 @@
       const transportStatus = document.querySelector("#transport-status")
       const sessionPhaseEl = document.querySelector("#session-phase")
       const xrStatus = document.querySelector("#xr-status")
+      const videoStatus = document.querySelector("#video-status")
       const sentCount = document.querySelector("#sent-count")
       const dropCount = document.querySelector("#drop-count")
       const prepHintEl = document.querySelector("#prep-hint")
 
-      let socket = null
-      let peerConnection = null
-      let dataChannel = null
-      let transportKind = null
-      let reconnectTimer = null
-      let connectionAttempt = 0
+      const poseTransport = {
+        // transport_session_id: page/Quest-client lifetime; carries the pose
+        // WebRTC + WSS fallback (and Phase 1+ video) channels. Distinct from
+        // pose_stream_id, which is generated per XR entry (see below).
+        transportSessionId: crypto.randomUUID(),
+        kind: null,
+        peer: null,
+        channel: null,
+        socket: null,
+        reconnectTimer: null,
+        attempt: 0,
+
+        isOpen() {
+          return (
+            this.channel?.readyState === "open" ||
+            this.socket?.readyState === WebSocket.OPEN
+          )
+        },
+
+        closeCurrent() {
+          const channel = this.channel
+          const peer = this.peer
+          const ws = this.socket
+          this.channel = null
+          this.peer = null
+          this.socket = null
+          this.kind = null
+          try {
+            channel?.close()
+          } catch {}
+          try {
+            peer?.close()
+          } catch {}
+          try {
+            ws?.close()
+          } catch {}
+        },
+
+        scheduleReconnect() {
+          clearTimeout(this.reconnectTimer)
+          this.reconnectTimer = setTimeout(() => this.connect(), 1000)
+        },
+
+        async connectWebRTC(attempt) {
+          const tm = this
+          const peer = new RTCPeerConnection({ iceServers: [] })
+          const channel = peer.createDataChannel("pose", {
+            ordered: false,
+            maxPacketLifeTime: RTC_PACKET_LIFETIME_MS,
+          })
+          tm.peer = peer
+          tm.channel = channel
+
+          peer.addEventListener("connectionstatechange", () => {
+            if (tm.peer !== peer) return
+            if (["failed", "closed", "disconnected"].includes(peer.connectionState)) {
+              tm.closeCurrent()
+              setConnectionStatus("WebRTC closed")
+              tm.scheduleReconnect()
+            }
+          })
+
+          const offer = await peer.createOffer()
+          await peer.setLocalDescription(offer)
+          await waitForIceGathering(peer)
+          if (attempt !== tm.attempt) throw new Error("superseded connection")
+
+          const response = await fetch("/api/webrtc/offer", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              sdp: peer.localDescription.sdp,
+              type: peer.localDescription.type,
+              transport_session_id: tm.transportSessionId,
+            }),
+          })
+          if (!response.ok) throw new Error(`WebRTC offer rejected (${response.status})`)
+          const answer = await response.json()
+          await peer.setRemoteDescription(answer)
+          await waitForDataChannelOpen(channel)
+          if (attempt !== tm.attempt) throw new Error("superseded connection")
+
+          tm.kind = "webrtc"
+          setConnectionStatus("WebRTC open")
+          channel.addEventListener("close", () => {
+            if (tm.channel !== channel) return
+            tm.closeCurrent()
+            setConnectionStatus("WebRTC closed")
+            tm.scheduleReconnect()
+          })
+        },
+
+        connectWebSocket(attempt) {
+          if (attempt !== this.attempt) return
+          const tm = this
+          setConnectionStatus("WSS fallback connecting")
+          const scheme = location.protocol === "https:" ? "wss" : "ws"
+          const ws = new WebSocket(
+            `${scheme}://${location.host}/ws?tsid=${encodeURIComponent(
+              tm.transportSessionId
+            )}`
+          )
+          tm.socket = ws
+
+          ws.onopen = () => {
+            if (tm.socket !== ws) return
+            tm.kind = "wss"
+            setConnectionStatus("WSS fallback open")
+          }
+          ws.onerror = () => {
+            if (tm.socket === ws) setConnectionStatus("WSS fallback error")
+          }
+          ws.onclose = () => {
+            if (tm.socket !== ws) return
+            tm.socket = null
+            tm.kind = null
+            setConnectionStatus("WSS fallback closed")
+            tm.scheduleReconnect()
+          }
+        },
+
+        async connect() {
+          clearTimeout(this.reconnectTimer)
+          this.attempt += 1
+          const attempt = this.attempt
+          this.closeCurrent()
+          setConnectionStatus("WebRTC connecting")
+          try {
+            await this.connectWebRTC(attempt)
+          } catch (error) {
+            if (attempt !== this.attempt) return
+            try {
+              this.channel?.close()
+              this.peer?.close()
+            } catch {}
+            this.channel = null
+            this.peer = null
+            this.connectWebSocket(attempt)
+          }
+        },
+      }
+
+      function transportIsOpen() {
+        return poseTransport.isOpen()
+      }
+
+      function connectTransport() {
+        poseTransport.connect()
+      }
+
+      // Phase 1: video PeerConnection (docs/stage1-revise.md §4 Phase 1).
+      // Browser offerer: recvonly video transceiver + video-control DC
+      // created before the offer (SCTP m-line inside the offer); the server
+      // answers sendonly. The synthetic SBS stream is stashed but NOT
+      // rendered yet (rendering lands in Phase 2/4). Independent
+      // reconnect/teardown from the pose channel; bound to the SAME
+      // transport_session_id so both channels share one session.
+      const videoConfig = { port: 8002 }
+      fetch("/health")
+        .then((response) => response.json())
+        .then((health) => {
+          if (health.video && Number.isInteger(health.video.port)) {
+            videoConfig.port = health.video.port
+          }
+        })
+        .catch(() => {})
+
+      const videoTransport = {
+        peer: null,
+        channel: null,
+        stream: null,
+        reconnectTimer: null,
+        attempt: 0,
+        stopped: true,
+
+        setStatus(value) {
+          if (videoStatus) videoStatus.textContent = value
+        },
+
+        closeCurrent() {
+          const peer = this.peer
+          const channel = this.channel
+          this.peer = null
+          this.channel = null
+          this.stream = null
+          try {
+            channel?.close()
+          } catch {}
+          try {
+            peer?.close()
+          } catch {}
+        },
+
+        scheduleReconnect() {
+          clearTimeout(this.reconnectTimer)
+          this.reconnectTimer = setTimeout(() => this.connect(), 1000)
+        },
+
+        async connect() {
+          if (this.stopped) return
+          clearTimeout(this.reconnectTimer)
+          this.attempt += 1
+          const attempt = this.attempt
+          this.closeCurrent()
+          this.setStatus("connecting")
+          const tm = this
+          const peer = new RTCPeerConnection({ iceServers: [] })
+          peer.addTransceiver("video", { direction: "recvonly" })
+          // Unordered + short lifetime per docs/stage1-revise.md §2.3:
+          // telemetry/ping is latest-wins and tolerates drops.
+          const channel = peer.createDataChannel("video-control", {
+            ordered: false,
+            maxPacketLifeTime: 100,
+          })
+          tm.peer = peer
+          tm.channel = channel
+
+          peer.addEventListener("connectionstatechange", () => {
+            if (tm.peer !== peer) return
+            if (["failed", "closed", "disconnected"].includes(peer.connectionState)) {
+              tm.closeCurrent()
+              tm.setStatus("closed")
+              if (!tm.stopped) tm.scheduleReconnect()
+            }
+          })
+
+          peer.addEventListener("track", (event) => {
+            if (tm.peer !== peer) return
+            tm.stream = event.streams[0] || null
+            let settings = ""
+            try {
+              const s = event.track.getSettings()
+              settings = ` ${s.width}x${s.height}`
+            } catch {}
+            console.log(`[video] track ${event.track.kind}${settings}`)
+            tm.setStatus("streaming")
+          })
+
+          channel.addEventListener("open", () => {
+            channel.send(JSON.stringify({ type: "ping", sent_at: Date.now() }))
+          })
+          channel.addEventListener("message", (event) => {
+            try {
+              const message = JSON.parse(event.data)
+              if (message.type === "pong") {
+                console.log(
+                  `[video] video-control pong rtt=${Date.now() - message.ping_sent_at}ms`
+                )
+              }
+            } catch {}
+          })
+
+          try {
+            const offer = await peer.createOffer()
+            await peer.setLocalDescription(offer)
+            await waitForIceGathering(peer)
+            if (attempt !== tm.attempt) throw new Error("superseded connection")
+
+            const scheme = location.protocol === "https:" ? "https" : "http"
+            const response = await fetch(
+              `${scheme}://${location.hostname}:${videoConfig.port}` +
+                "/api/webrtc/video/offer",
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  sdp: peer.localDescription.sdp,
+                  type: peer.localDescription.type,
+                  transport_session_id: poseTransport.transportSessionId,
+                }),
+              }
+            )
+            if (!response.ok) throw new Error(`video offer rejected (${response.status})`)
+            const answer = await response.json()
+            await peer.setRemoteDescription(answer)
+            if (attempt !== tm.attempt) throw new Error("superseded connection")
+            tm.setStatus("negotiated")
+          } catch (error) {
+            if (attempt !== tm.attempt) return
+            tm.closeCurrent()
+            tm.setStatus("failed")
+            if (!tm.stopped) tm.scheduleReconnect()
+          }
+        },
+
+        start() {
+          this.stopped = false
+          this.connect()
+        },
+
+        stop() {
+          this.stopped = true
+          clearTimeout(this.reconnectTimer)
+          this.closeCurrent()
+          this.setStatus("off")
+        },
+      }
+
+      // Phase 0 capability probe for the future video channel
+      // (docs/stage1-revise.md §2.6). Log-only until video lands in Phase 1+.
+      const videoCapabilities = {
+        xrMediaBinding: typeof XRMediaBinding !== "undefined",
+        layers: false,
+        probeXRSession(session) {
+          const features = Array.isArray(session.enabledFeatures)
+            ? session.enabledFeatures
+            : []
+          this.layers = features.includes("layers")
+          console.log(
+            `[video] XRMediaBinding=${this.xrMediaBinding} ` +
+              `layers=${this.layers} enabledFeatures=${features.join(",")}`
+          )
+        },
+      }
+
       let xrSession = null
       let sent = 0
       let dropped = 0
@@ -225,12 +537,6 @@
       let sessionPhase = "idle"
       let prepDeadlineMs = 0
       let poseStreaming = false
-
-      function transportIsOpen() {
-        return (
-          dataChannel?.readyState === "open" || socket?.readyState === WebSocket.OPEN
-        )
-      }
 
       function setSessionPhase(phase) {
         sessionPhase = phase
@@ -250,30 +556,6 @@
             setSessionPhase("ready")
           }
         }
-      }
-
-      function closeCurrentTransport() {
-        const channel = dataChannel
-        const peer = peerConnection
-        const ws = socket
-        dataChannel = null
-        peerConnection = null
-        socket = null
-        transportKind = null
-        try {
-          channel?.close()
-        } catch {}
-        try {
-          peer?.close()
-        } catch {}
-        try {
-          ws?.close()
-        } catch {}
-      }
-
-      function scheduleReconnect() {
-        clearTimeout(reconnectTimer)
-        reconnectTimer = setTimeout(connectTransport, 1000)
       }
 
       function waitForIceGathering(peer, timeoutMs = 4000) {
@@ -311,97 +593,6 @@
           channel.addEventListener("open", opened)
           channel.addEventListener("close", closed)
         })
-      }
-
-      async function connectWebRTC(attempt) {
-        const peer = new RTCPeerConnection({ iceServers: [] })
-        const channel = peer.createDataChannel("pose", {
-          ordered: false,
-          maxPacketLifeTime: RTC_PACKET_LIFETIME_MS,
-        })
-        peerConnection = peer
-        dataChannel = channel
-
-        peer.addEventListener("connectionstatechange", () => {
-          if (peerConnection !== peer) return
-          if (["failed", "closed", "disconnected"].includes(peer.connectionState)) {
-            closeCurrentTransport()
-            setConnectionStatus("WebRTC closed")
-            scheduleReconnect()
-          }
-        })
-
-        const offer = await peer.createOffer()
-        await peer.setLocalDescription(offer)
-        await waitForIceGathering(peer)
-        if (attempt !== connectionAttempt) throw new Error("superseded connection")
-
-        const response = await fetch("/api/webrtc/offer", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sdp: peer.localDescription.sdp,
-            type: peer.localDescription.type,
-          }),
-        })
-        if (!response.ok) throw new Error(`WebRTC offer rejected (${response.status})`)
-        const answer = await response.json()
-        await peer.setRemoteDescription(answer)
-        await waitForDataChannelOpen(channel)
-        if (attempt !== connectionAttempt) throw new Error("superseded connection")
-
-        transportKind = "webrtc"
-        setConnectionStatus("WebRTC open")
-        channel.addEventListener("close", () => {
-          if (dataChannel !== channel) return
-          closeCurrentTransport()
-          setConnectionStatus("WebRTC closed")
-          scheduleReconnect()
-        })
-      }
-
-      function connectWebSocket(attempt) {
-        if (attempt !== connectionAttempt) return
-        setConnectionStatus("WSS fallback connecting")
-        const scheme = location.protocol === "https:" ? "wss" : "ws"
-        const ws = new WebSocket(`${scheme}://${location.host}/ws`)
-        socket = ws
-
-        ws.onopen = () => {
-          if (socket !== ws) return
-          transportKind = "wss"
-          setConnectionStatus("WSS fallback open")
-        }
-        ws.onerror = () => {
-          if (socket === ws) setConnectionStatus("WSS fallback error")
-        }
-        ws.onclose = () => {
-          if (socket !== ws) return
-          socket = null
-          transportKind = null
-          setConnectionStatus("WSS fallback closed")
-          scheduleReconnect()
-        }
-      }
-
-      async function connectTransport() {
-        clearTimeout(reconnectTimer)
-        connectionAttempt += 1
-        const attempt = connectionAttempt
-        closeCurrentTransport()
-        setConnectionStatus("WebRTC connecting")
-        try {
-          await connectWebRTC(attempt)
-        } catch (error) {
-          if (attempt !== connectionAttempt) return
-          try {
-            dataChannel?.close()
-            peerConnection?.close()
-          } catch {}
-          dataChannel = null
-          peerConnection = null
-          connectWebSocket(attempt)
-        }
       }
 
       function readPose(frame, space, referenceSpace) {
@@ -997,6 +1188,8 @@
             optionalFeatures: ["body-tracking"],
           })
           xrSession = session
+          videoCapabilities.probeXRSession(session)
+          videoTransport.start()
           enterButton.disabled = true
           poseStreaming = false
           setSessionPhase("preparing")
@@ -1026,6 +1219,7 @@
           session.addEventListener("end", () => {
             xrSession = null
             poseStreaming = false
+            videoTransport.stop()
             prepDeadlineMs = 0
             xrStatus.textContent = "ended"
             setSessionPhase(transportIsOpen() ? "ready" : "idle")
@@ -1123,8 +1317,14 @@
               return
             }
 
-            const rtc = dataChannel?.readyState === "open" ? dataChannel : null
-            const ws = socket?.readyState === WebSocket.OPEN ? socket : null
+            const rtc =
+              poseTransport.channel?.readyState === "open"
+                ? poseTransport.channel
+                : null
+            const ws =
+              poseTransport.socket?.readyState === WebSocket.OPEN
+                ? poseTransport.socket
+                : null
             if (!rtc && !ws) return
             const bodyCoordinateFrame = createUpperBackBodyFrame(
               upperBack,
