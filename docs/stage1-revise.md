@@ -17,7 +17,7 @@
 | # | 评审意见 | 核验结论 |
 |---|---|---|
 | 1 | `PoseFrame.session_id` 在 XR 进入后才创建，与 transport 生命周期不同 | ✅ 确认。`quest_crt/static/index.html:1020` 在 `navigator.xr.requestSession()` 之后才 `crypto.randomUUID()`；pose WebRTC 连接在页面初始化即建立（`index.html:316`）。session_id 写入 QCRT 二进制包 16 字节（`index.html:612`）与 JSON 帧（`index.html:1148`），服务器 `_binary_message_order` 从偏移 28:44 读取（`server.py:577-583`）——这是 **pose_stream_id**，Phase 0 不动 |
-| 2 | answer 方向应为 sendonly 而非 sendrecv | ✅ 方向结论确认，**但机制表述修正（Phase 1 实测）**：answer m-line 方向不是 `reverse_direction()` 的直接产物，而是 `and_direction(transceiver.direction, transceiver._offerDirection)`（`rtcpeerconnection.py:575-578`，位与：`DIRECTIONS = [inactive, sendonly, recvonly, sendrecv]`）。远端 recvonly offer 时 `_offerDirection = sendonly`（`rtcpeerconnection.py:936-941`）；若服务器无本地 track（transceiver=recvonly），`recvonly & sendonly = inactive`，**应答无方向、sender 不启动**（`__connect` 只在 `currentDirection in [sendonly, sendrecv]` 时 send，`:1084-1086`）。实测：无 track 应答 recvonly offer → answer 无 direction、currentDirection=inactive；先 `addTrack`（transceiver=sendrecv）再应答 → `sendrecv & sendonly = sendonly` ✓。**服务器必须在 `setRemoteDescription` 之前 `addTrack`** |
+| 2 | answer 方向应为 sendonly 而非 sendrecv | ✅ 方向结论确认，机制表述两度修正（Phase 1/2 实测）：answer m-line 方向是 `and_direction(transceiver.direction, transceiver._offerDirection)`（`rtcpeerconnection.py:575-578`，位与：`DIRECTIONS = [inactive, sendonly, recvonly, sendrecv]`）。远端 recvonly offer 时 `_offerDirection = sendonly`（`:936-941`）。**关键约束是 `addTrack` 在 `createAnswer` 之前，而非在 `setRemoteDescription` 之前**：Phase 2 实测 `setRemoteDescription → addTrack → createAnswer` 顺序同样得 sendonly ✓——aiortc 的 `addTrack` 会复用远端 m-line 创建的 recvonly transceiver 并 `or_direction(recvonly, sendonly)=sendrecv`（`rtcpeerconnection.py:473-479`），`sendrecv & sendonly = sendonly`；无 track 应答则 `recvonly & sendonly = inactive`（sender 不启动，`__connect` 只在 `currentDirection in [sendonly, sendrecv]` 时 send，`:1084-1086`）。**附带事实（Phase 2）**：answer 的 codec 列表在 `setRemoteDescription` 时被 `filter_preferred_codecs` 冻结，`transceiver.setCodecPreferences` 在之后设置**不生效**（实测设置成功但 answer 仍含 VP8）；且 `RTCRtpReceiver.getCapabilities()` 返回的 H264 capability `sdpFmtpLine` 为空串，answer 的 fmtp 从浏览器 offer 复制（42001f/42e01f）。**因此强制 H.264 的唯一可靠杠杆在浏览器侧 `setCodecPreferences([h264])`（offer 只含 H264/rtx）**，服务端负责验证记录 negotiated codec 并在非 H.264 时显式报警 |
 | 3 | 8000→8002 跨 Origin 需要 CORS | ✅ 确认。`server.py` 无任何 CORSMiddleware；POST JSON 会触发 preflight；证书 SAN 已含 LAN IP（`server.py:959-996`），两端口复用同一证书无额外问题 |
 | 5 | av.Packet track 由 aiortc 负责后续 RTP 全链路 | ✅ 确认，无需重写 pipeline。aiortc 1.15.0 `_next_encoded_frame`（`rtcrtpsender.py:313-343`）对 `Frame` 走 `encoder.encode(data, force_keyframe)`，对非 Frame（即 `av.Packet`）走 `encoder.pack(data)`；`H264Encoder.pack()` 存在（`codecs/h264.py:298`）。`MediaStreamTrack.recv()` 返回类型声明为 `Union[Frame, Packet]`（`mediastreams.py:55`） |
 | 5 | PLI/FIR 不会天然传到外部 NVENC | ✅ 确认，这是本项目必须自建的桥。PLI/FIR→`_send_keyframe()`→`__force_keyframe=True`（`rtcrtpsender.py:278-281, 351-356`），但 `__force_keyframe` 只在 encode 分支消费（`:316-319`），**pack 分支不接收**；全包无任何 track 级 keyframe 回调。且 `RTCRtpSender` 由 `RTCPeerConnection` 内部直接构造（`rtcpeerconnection.py:1199`），公开 API 无法子类化 |
@@ -112,17 +112,19 @@ videoPc.createDataChannel("video-control", { ordered: false, maxPacketLifeTime: 
 const offer = await videoPc.createOffer()
 → POST /api/webrtc/video/offer { transport_session_id, sdp, type }
 
-// PC/服务器（8002 独立 loop）——顺序关键：
-// 先 addTrack（transceiver=sendrecv）再 setRemoteDescription，
-// 否则 and_direction(sendrecv, sendonly)=sendonly 无从成立，
-// 无 track 时 recvonly & sendonly = inactive（§1.1 表行 2 实测）
-pc.addTrack(video_track, stream)
+// PC/服务器（8002 独立 loop）——Phase 2 实测顺序（§1.1 表行 2）：
+// addTrack 只需在 createAnswer 之前；aiortc 复用远端 recvonly
+// transceiver 升级 sendrecv → sendrecv & sendonly = sendonly
 setRemoteDescription(offer)
-→ createAnswer → setLocalDescription
+pc.addTrack(video_track, stream)
+answer = await pc.createAnswer()
+await pc.setLocalDescription(answer)
 ```
 
 - **无 renegotiation**。answer 方向 `sendonly`（机制见 §1.1 表行 2）。
+- **H.264 协商（Phase 2 gate）**：服务端 answer 的 codec 列表在 setRemoteDescription 时冻结，服务端 `codecPreferences` 无法改变它（§1.1 表行 2 实测）；**由浏览器在 offer 侧 `setCodecPreferences([h264])` 强制**（offer 只含 H264/rtx → answer 只含 H264/rtx）。服务端在 answer 后解析第一个非 rtx payload 的 rtpmap/fmtp（mimeType/payloadType/profile-level-id/packetization-mode/clockRate）写入 registry 与 `/health`；协商结果非 H.264 时服务端打 WARNING，Phase 2 判定不通过。
 - video-control DataChannel **由浏览器在 offer 中创建**（SCTP m-line 进 offer），服务器 `on("datachannel")` 按 label 路由：`video-control` 接受，其余关闭。video PC 的 label 策略独立于 pose PC（现有 pose PC 仍只接受 `"pose"`）。
+- **video-control 可靠性语义（Phase 2 确认不变）**：当前 `unordered + maxPacketLifeTime=100ms`，仅承载可容忍丢失的 ping/pong、clock probe、telemetry。**未来**若经此通道发送必须成功的配置操作（bitrate update、resolution switch、encoder config），必须带 ACK/retry（幂等 latest-wins），或另建 reliable config 通道；**不得把 partial-reliable 通道当作可靠配置总线**。
 - video offer 只校验 `transport_session_id` 合法且未过期，**不要求 pose PC 存活**（支持 pose down / video up）。
 
 ### 2.4 服务端 Video pipeline（Phase 2-3）
@@ -271,11 +273,28 @@ depth DataChannel 特性钉死：`unordered`、`latest-only`、低/零 retransmi
 
 **验收**：两个 PC 共存于同一 transport_session；任一通道独立断开/重连不影响另一个。
 
-### Phase 2 — 内建编码器 smoke test（低规格）
+### Phase 2 — 内建编码器 smoke test：H.264 显示链路（低规格）
 
-**任务**：aiortc 内建 H.264 编码器 + 低分辨率/30fps → Quest `<video>` 显示。
+**范围（严格收窄）**：只验证低规格 H.264 WebRTC 显示链路——synthetic SBS 1280×360@30 → H.264（浏览器 `setCodecPreferences` 强制）→ aiortc 内建编码器 → Quest `<video>`。**不做**：ZED Mini、NVENC、2560×720@60、最终码率优化、Depth、WebXR stereo rendering、XRMediaBinding、IPD、reprojection。
 
-**验收**：仅验证 SDP / ICE / ontrack / 浏览器 decode / reconnect / transportManager / 基础显示。**不评估最终 2560×720@60 的画质码率延迟**。
+**服务端**：signaling 顺序 `setRemoteDescription → addTrack → createAnswer → setLocalDescription`（§1.1 表行 2 实测）；answer 后解析并记录 negotiated codec（mimeType / payloadType / profile-level-id / packetization-mode / clockRate）入 registry 与 `/health`；非 H.264 协商打 WARNING（不得静默 fallback）；协商超时守卫（offer 后不连接 → 超时强制 close + lease 释放）。
+
+**前端**：offer 侧 `setCodecPreferences([h264])`；ontrack 接普通 `<video>`（autoplay/muted/playsinline）供人工观察 SBS；`getStats()` 每 2s 采样并记录（codec / framesReceived / framesDecoded / framesDropped / framesPerSecond / bytesReceived / packetsLost / jitter），状态区与 console 输出。
+
+**Phase 2 → Phase 3 Gate（全部满足才算 PASS，Quest 3 实机）**：
+- [ ] H.264 negotiated 明确成立（服务端 registry 与浏览器 getStats 双侧确认，mimeType=H264）
+- [ ] 1280×360@30 SBS 连续稳定播放
+- [ ] 左右 marker / SBS 布局正确（无左右翻转、无 crop 错位、无宽高比错误、无意外 resize）
+- [ ] framesDecoded 持续增长
+- [ ] 无持续性 decode failure
+- [ ] dropped frames 在可接受范围
+- [ ] video-control ping/pong 正常
+- [ ] video reconnect 不影响 pose；pose reconnect 不影响 video
+- [ ] getStats 能确认 codec / decode / packet loss 状态
+
+若最终协商为 VP8 或 Quest offer 的 H.264 capability 与 aiortc 不兼容：**不得判定通过**，以真实 SDP / capability 为准报告原因。
+
+通过后**停止优化 aiortc 内建编码器**（不在软件编码 smoke test 上追最终性能），下一阶段直接进入 Phase 3（ZED → rectified L/R → SBS → NVENC H.264 → av.Packet track → aiortc RTP/RTCP → Quest）。
 
 ### Phase 3 — ZED + NVENC 目标路径
 

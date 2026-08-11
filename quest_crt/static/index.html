@@ -102,6 +102,17 @@
         opacity: 0;
         pointer-events: none;
       }
+
+      /* Phase 2: plain SBS <video> for manual inspection of the synthetic
+         source (no WebXR yet). 1280x360 SBS = 32:9, letterboxed. */
+      .video-display {
+        display: block;
+        width: min(100%, 640px);
+        margin: 14px auto 0;
+        aspect-ratio: 32 / 9;
+        border-radius: 10px;
+        background: #000;
+      }
     </style>
   </head>
   <body>
@@ -132,6 +143,17 @@
         <span>本地缓冲丢帧</span>
         <span class="value" id="drop-count">0</span>
       </div>
+
+      <!-- Phase 2: synthetic SBS preview (docs/stage1-revise.md §4 Phase 2).
+           Left/right halves + moving markers let you verify no flip, no
+           crop shift, no aspect distortion. -->
+      <video
+        class="video-display"
+        id="video-display"
+        autoplay
+        muted
+        playsinline
+      ></video>
     </main>
 
     <canvas id="xr-canvas"></canvas>
@@ -209,6 +231,7 @@
       const sessionPhaseEl = document.querySelector("#session-phase")
       const xrStatus = document.querySelector("#xr-status")
       const videoStatus = document.querySelector("#video-status")
+      const videoDisplay = document.querySelector("#video-display")
       const sentCount = document.querySelector("#sent-count")
       const dropCount = document.querySelector("#drop-count")
       const prepHintEl = document.querySelector("#prep-hint")
@@ -385,6 +408,10 @@
         channel: null,
         stream: null,
         reconnectTimer: null,
+        statsTimer: null,
+        // Phase 2 gate data: negotiated codec + inbound-rtp stats
+        // (docs/stage1-revise.md §4 Phase 2, getStats list).
+        stats: { codec: null, last: null, samples: [] },
         attempt: 0,
         stopped: true,
 
@@ -398,12 +425,77 @@
           this.peer = null
           this.channel = null
           this.stream = null
+          this.stats.last = null
+          clearInterval(this.statsTimer)
+          this.statsTimer = null
+          if (videoDisplay) videoDisplay.srcObject = null
           try {
             channel?.close()
           } catch {}
           try {
             peer?.close()
           } catch {}
+        },
+
+        // Phase 2: sample inbound-rtp video stats every 2 s; keep a rolling
+        // window so the acceptance report can cite real numbers.
+        async sampleStats() {
+          const peer = this.peer
+          if (!peer) return
+          let reports
+          try {
+            reports = await peer.getStats()
+          } catch {
+            return
+          }
+          const codecs = new Map()
+          reports.forEach((report) => {
+            if (report.type === "codec") codecs.set(report.id, report)
+          })
+          reports.forEach((report) => {
+            if (report.type !== "inbound-rtp" || report.kind !== "video") return
+            const codec = codecs.get(report.codecId)
+            if (codec) {
+              this.stats.codec = {
+                mimeType: codec.mimeType,
+                payloadType: codec.payloadType,
+              }
+            }
+            const entry = {
+              codec: codec
+                ? { mimeType: codec.mimeType, payloadType: codec.payloadType }
+                : null,
+              framesReceived: report.framesReceived ?? null,
+              framesDecoded: report.framesDecoded ?? null,
+              framesDropped: report.framesDropped ?? null,
+              framesPerSecond: report.framesPerSecond ?? null,
+              bytesReceived: report.bytesReceived ?? null,
+              packetsLost: report.packetsLost ?? null,
+              jitter: report.jitter ?? null,
+            }
+            this.stats.last = entry
+            this.stats.samples.push(entry)
+            if (this.stats.samples.length > 300) this.stats.samples.shift()
+            this.renderStats()
+          })
+        },
+
+        renderStats() {
+          const s = this.stats.last
+          if (!s) return
+          const mime = this.stats.codec
+            ? this.stats.codec.mimeType.split("/").pop()
+            : "?"
+          const fps = s.framesPerSecond ?? "?"
+          this.setStatus(
+            `${mime} ${fps}fps d=${s.framesDecoded ?? "?"} dr=${s.framesDropped ?? "?"} ` +
+              `lost=${s.packetsLost ?? "?"}`
+          )
+          if (this.stats.samples.length % 5 === 0) {
+            console.log(
+              `[video] stats #${this.stats.samples.length}`, JSON.stringify(s)
+            )
+          }
         },
 
         scheduleReconnect() {
@@ -420,7 +512,21 @@
           this.setStatus("connecting")
           const tm = this
           const peer = new RTCPeerConnection({ iceServers: [] })
-          peer.addTransceiver("video", { direction: "recvonly" })
+          const transceiver = peer.addTransceiver("video", {
+            direction: "recvonly",
+          })
+          // Phase 2 gate: force H.264 by preference. aiortc's answer codec
+          // list mirrors the offer's order (its own codecPreferences is
+          // frozen at setRemoteDescription), so the browser side is the
+          // only reliable lever — verified against aiortc 1.15.0,
+          // docs/stage1-revise.md §1.1 row 2.
+          const codecCaps = RTCRtpReceiver.getCapabilities("video").codecs
+          const h264 = codecCaps.filter((c) => /h264/i.test(c.mimeType))
+          if (h264.length > 0) {
+            transceiver.setCodecPreferences(h264)
+          } else {
+            console.warn("[video] no H.264 in receiver capabilities", codecCaps)
+          }
           // Unordered + short lifetime per docs/stage1-revise.md §2.3:
           // telemetry/ping is latest-wins and tolerates drops.
           const channel = peer.createDataChannel("video-control", {
@@ -448,6 +554,11 @@
               settings = ` ${s.width}x${s.height}`
             } catch {}
             console.log(`[video] track ${event.track.kind}${settings}`)
+            // Phase 2: plain <video> preview (no WebXR / no eye split yet).
+            if (videoDisplay && tm.stream) {
+              videoDisplay.srcObject = tm.stream
+              videoDisplay.play().catch(() => {})
+            }
             tm.setStatus("streaming")
           })
 
@@ -490,6 +601,9 @@
             await peer.setRemoteDescription(answer)
             if (attempt !== tm.attempt) throw new Error("superseded connection")
             tm.setStatus("negotiated")
+            clearInterval(tm.statsTimer)
+            tm.statsTimer = setInterval(() => tm.sampleStats(), 2000)
+            tm.sampleStats()
           } catch (error) {
             if (attempt !== tm.attempt) return
             tm.closeCurrent()

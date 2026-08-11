@@ -13,6 +13,7 @@ pattern, produced with plain ``bytearray`` (no numpy dependency).
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -142,6 +143,8 @@ class VideoPeerRegistry:
         self._by_tsid: dict[str, set[RTCPeerConnection]] = {}
         self._leases: dict[RTCPeerConnection, ChannelLease] = {}
         self._clients: dict[RTCPeerConnection, str] = {}
+        self._negotiated: dict[RTCPeerConnection, dict[str, Any]] = {}
+        self._guards: dict[RTCPeerConnection, asyncio.Task[None]] = {}
 
     @property
     def peers(self) -> int:
@@ -159,6 +162,20 @@ class VideoPeerRegistry:
         self._leases[peer] = lease
         self._clients[peer] = client_name
 
+    def set_guard(self, peer: RTCPeerConnection, guard: asyncio.Task[None]) -> None:
+        """Attach the negotiation-timeout guard (cancelled on connect/close)."""
+        self._guards[peer] = guard
+
+    def cancel_guard(self, peer: RTCPeerConnection) -> None:
+        guard = self._guards.pop(peer, None)
+        if guard is not None and not guard.done():
+            guard.cancel()
+
+    def set_negotiated_codec(
+        self, peer: RTCPeerConnection, codec: dict[str, Any] | None
+    ) -> None:
+        self._negotiated[peer] = codec
+
     async def close(self, peer: RTCPeerConnection) -> None:
         """Release one video peer: lease token, registry entries, close."""
         if peer not in self._peers:
@@ -166,6 +183,8 @@ class VideoPeerRegistry:
         self._peers.discard(peer)
         lease = self._leases.pop(peer, None)
         self._clients.pop(peer, None)
+        self._negotiated.pop(peer, None)
+        self.cancel_guard(peer)
         for tsid, peers in list(self._by_tsid.items()):
             peers.discard(peer)
             if not peers:
@@ -180,19 +199,92 @@ class VideoPeerRegistry:
             await self.close(peer)
 
     def describe(self) -> dict[str, Any]:
+        codecs = []
+        for peer in sorted(self._peers, key=repr):
+            client = self._clients.get(peer, "unknown")
+            tsid = next(
+                (
+                    tsid
+                    for tsid, peers in self._by_tsid.items()
+                    if peer in peers
+                ),
+                None,
+            )
+            codecs.append(
+                {
+                    "transport_session_id": tsid,
+                    "client": client,
+                    "negotiated_codec": self._negotiated.get(peer),
+                }
+            )
         return {
             "peers": self.peers,
             "sessions": {
                 tsid: [self._clients[peer] for peer in peers]
                 for tsid, peers in sorted(self._by_tsid.items())
             },
+            "negotiated_codecs": codecs,
         }
+
+
+def parse_negotiated_video_codec(sdp: str) -> dict[str, Any] | None:
+    """First non-rtx payload of the video m-line, with rtpmap/fmtp.
+
+    The first non-rtx payload of the answer's video m-line is the codec the
+    offerer (Quest browser) will actually use — it mirrors the offer's
+    codec order, which the browser controls via ``setCodecPreferences``.
+    Phase 2 gate: this must come out as H.264.
+    """
+    in_video = False
+    rtpmap: dict[str, str] = {}
+    fmtp: dict[str, str] = {}
+    for raw in sdp.splitlines():
+        line = raw.strip()
+        if line.startswith("m="):
+            if in_video:
+                break
+            in_video = line.startswith("m=video")
+            continue
+        if not in_video:
+            continue
+        if line.startswith("a=rtpmap:"):
+            pt, spec = line[len("a=rtpmap:") :].split(" ", 1)
+            rtpmap[pt] = spec
+        elif line.startswith("a=fmtp:"):
+            pt, spec = line[len("a=fmtp:") :].split(" ", 1)
+            fmtp[pt] = spec
+    for pt in rtpmap:
+        spec = rtpmap[pt]
+        if spec.startswith("rtx"):
+            continue
+        mime, clock = spec.split("/", 1)
+        info: dict[str, Any] = {
+            "payloadType": int(pt),
+            "mimeType": mime,
+            "clockRate": int(clock),
+        }
+        if pt in fmtp:
+            info["sdpFmtpLine"] = fmtp[pt]
+            params = dict(
+                part.split("=", 1) for part in fmtp[pt].split(";") if "=" in part
+            )
+            info["profileLevelId"] = params.get("profile-level-id")
+            info["packetizationMode"] = params.get("packetization-mode")
+        return info
+    return None
 
 
 def build_video_app(
     transport_sessions: TransportSessionManager,
+    negotiation_timeout: float = 20.0,
 ) -> FastAPI:
-    """Create the :8002 signaling app (one app per event loop)."""
+    """Create the :8002 signaling app (one app per event loop).
+
+    ``negotiation_timeout`` bounds how long an offered-but-never-connected
+    peer (and its lease) is kept before forced cleanup — a client that
+    disappears mid-negotiation would otherwise pin the "video" channel
+    forever, since ICE state transitions never fire.
+    """
     registry = VideoPeerRegistry(transport_sessions)
 
     @asynccontextmanager
@@ -237,11 +329,6 @@ def build_video_app(
         client_name = f"{client.host}:{client.port}" if client else "unknown"
 
         peer = RTCPeerConnection()
-        # Attach the track BEFORE answering: with a local (sendrecv)
-        # transceiver the answer to a recvonly offer is sendonly; without
-        # it aiortc answers inactive (verified against 1.15.0, §1 of the
-        # revision doc).
-        peer.addTrack(SyntheticSbsTrack())
         lease = transport_sessions.begin_channel(
             offer.transport_session_id, "video", client_name
         )
@@ -272,6 +359,8 @@ def build_video_app(
 
         @peer.on("connectionstatechange")
         async def on_connectionstatechange() -> None:
+            if peer.connectionState == "connected":
+                registry.cancel_guard(peer)
             if peer.connectionState in {"failed", "closed", "disconnected"}:
                 await registry.close(peer)
 
@@ -279,6 +368,11 @@ def build_video_app(
             await peer.setRemoteDescription(
                 RTCSessionDescription(sdp=offer.sdp, type=offer.type)
             )
+            # Signaling order per docs/stage1-revise.md §1.1 row 2: the
+            # track only needs to exist before createAnswer. aiortc reuses
+            # the recvonly transceiver it created for the remote m-line and
+            # upgrades it to sendrecv, so the answer is still sendonly.
+            peer.addTrack(SyntheticSbsTrack())
             answer = await peer.createAnswer()
             await peer.setLocalDescription(answer)
         except Exception as exc:
@@ -286,6 +380,46 @@ def build_video_app(
             raise HTTPException(
                 status_code=400, detail=f"WebRTC negotiation failed: {exc}"
             ) from exc
+
+        negotiated = parse_negotiated_video_codec(answer.sdp)
+        registry.set_negotiated_codec(peer, negotiated)
+        if negotiated is None:
+            print(
+                f"WARNING: no video codec parsed from answer for {client_name}",
+                flush=True,
+            )
+        elif negotiated.get("mimeType") != "H264":
+            # Phase 2 gate: any non-H.264 result must be reported, not
+            # silently accepted (docs/stage1-revise.md §4 Phase 2).
+            print(
+                f"WARNING: negotiated video codec is {negotiated['mimeType']} "
+                f"pt={negotiated['payloadType']} (expected H264) for {client_name}",
+                flush=True,
+            )
+        else:
+            print(
+                f"Negotiated video codec H264 pt={negotiated['payloadType']} "
+                f"profile={negotiated.get('profileLevelId')} "
+                f"packetization-mode={negotiated.get('packetizationMode')} "
+                f"for {client_name}",
+                flush=True,
+            )
+
+        # Guard against a client that offers but never connects: without
+        # this, ICE state never transitions and the peer + lease would pin
+        # the "video" channel forever.
+        async def _negotiation_guard() -> None:
+            await asyncio.sleep(negotiation_timeout)
+            if peer.connectionState != "connected":
+                print(
+                    f"Video negotiation timed out for {client_name} "
+                    f"(state={peer.connectionState}); closing peer",
+                    flush=True,
+                )
+                await registry.close(peer)
+
+        guard = asyncio.create_task(_negotiation_guard())
+        registry.set_guard(peer, guard)
 
         local_description = peer.localDescription
         if local_description is None:

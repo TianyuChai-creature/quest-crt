@@ -9,10 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import unittest
 
+from unittest.mock import patch
+
 import httpx
-from aiortc import RTCPeerConnection, RTCSessionDescription
+from aiortc import RTCPeerConnection, RTCSessionDescription, RTCRtpReceiver
 
 import server
 from quest_crt.transport_session import TransportSessionManager
@@ -88,9 +91,19 @@ class VideoSignalingTests(unittest.IsolatedAsyncioTestCase):
                 json={"sdp": sdp, "type": "offer", "transport_session_id": tsid},
             )
 
-    async def _browser_pc(self) -> tuple[RTCPeerConnection, object, object]:
+    async def _browser_pc(
+        self, h264: bool = True
+    ) -> tuple[RTCPeerConnection, object, object]:
         browser = RTCPeerConnection()
-        browser.addTransceiver("video", direction="recvonly")
+        transceiver = browser.addTransceiver("video", direction="recvonly")
+        if h264:
+            # Mirror the Quest page: setCodecPreferences([h264]) is the only
+            # lever that makes the offer (and therefore the answer) H.264 —
+            # aiortc's server-side codecPreferences is frozen at
+            # setRemoteDescription (docs/stage1-revise.md §1.1 row 2).
+            caps = RTCRtpReceiver.getCapabilities("video").codecs
+            h264_caps = [c for c in caps if "H264" in c.mimeType.upper()]
+            transceiver.setCodecPreferences(h264_caps)
         control = browser.createDataChannel("video-control")
         offer = await browser.createOffer()
         await browser.setLocalDescription(offer)
@@ -188,6 +201,137 @@ class VideoSignalingTests(unittest.IsolatedAsyncioTestCase):
             self.assertIsInstance(pong_data["received_at"], int)
         finally:
             await browser.close()
+
+    async def test_negotiated_codec_is_h264_recorded(self) -> None:
+        """Phase 2 gate: the answer must negotiate H.264 (not VP8), and the
+        registry must record mimeType/pt/profile-level-id/packetization-mode.
+        """
+        browser, _control, offer = await self._browser_pc(h264=True)
+        try:
+            response = await self._post_offer(self.tsid, offer.sdp)
+            self.assertEqual(response.status_code, 200)
+            answer = response.json()
+            # H.264 must be the first non-rtx payload of the video m-line
+            # (the answer mirrors the offer's codec order).
+            rtpmaps = re.findall(r"^a=rtpmap:(\d+) ([\w/]+)\r?$", answer["sdp"], re.M)
+            non_rtx = [mime for _pt, mime in rtpmaps if not mime.startswith("rtx")]
+            # Both H.264 variants (42001f / 42e01f) come first; VP8 is gone.
+            self.assertEqual(non_rtx, ["H264/90000", "H264/90000"])
+            codecs = self.app.registry.describe()["negotiated_codecs"]
+            self.assertEqual(len(codecs), 1)
+            negotiated = codecs[0]["negotiated_codec"]
+            self.assertEqual(negotiated["mimeType"], "H264")
+            self.assertEqual(negotiated["clockRate"], 90000)
+            self.assertEqual(negotiated["packetizationMode"], "1")
+            self.assertIn(
+                negotiated["profileLevelId"], ("42001f", "42e01f")
+            )
+        finally:
+            await browser.close()
+
+    async def test_malformed_sdp_releases_lease(self) -> None:
+        response = await self._post_offer(self.tsid, "this is not an sdp")
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(self.app.registry.peers, 0)
+        # Lease was attached then released; the empty session entry lingers.
+        self.assertEqual(_session_channels(self.manager, self.tsid), [])
+
+    async def test_set_remote_description_failure_releases_lease(self) -> None:
+        browser, _control, offer = await self._browser_pc()
+        original = RTCPeerConnection.setRemoteDescription
+
+        async def failing_offer(self: object, description: object) -> None:
+            if description.type == "offer":  # type: ignore[attr-defined]
+                raise ValueError("simulated setRemoteDescription failure")
+            return await original(self, description)  # type: ignore[arg-type]
+
+        try:
+            with patch.object(
+                RTCPeerConnection, "setRemoteDescription", failing_offer
+            ):
+                response = await self._post_offer(self.tsid, offer.sdp)
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(self.app.registry.peers, 0)
+            self.assertEqual(_session_channels(self.manager, self.tsid), [])
+        finally:
+            await browser.close()
+
+    async def test_create_answer_failure_releases_lease(self) -> None:
+        browser, _control, offer = await self._browser_pc()
+
+        async def failing_answer(self: object) -> None:
+            raise ValueError("simulated createAnswer failure")
+
+        try:
+            with patch.object(
+                RTCPeerConnection, "createAnswer", failing_answer
+            ):
+                response = await self._post_offer(self.tsid, offer.sdp)
+            self.assertEqual(response.status_code, 400)
+            self.assertEqual(self.app.registry.peers, 0)
+            self.assertEqual(_session_channels(self.manager, self.tsid), [])
+        finally:
+            await browser.close()
+
+    async def test_negotiation_timeout_releases_lease(self) -> None:
+        """A client that offers but never connects must not pin the channel:
+        the negotiation guard closes the peer after the timeout."""
+        manager = TransportSessionManager()
+        app = build_video_app(manager, negotiation_timeout=0.3)
+        browser, _control, offer = await self._browser_pc()
+        try:
+            transport = httpx.ASGITransport(app=app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://video-signaling"
+            ) as client:
+                response = await client.post(
+                    "/api/webrtc/video/offer",
+                    json={
+                        "sdp": offer.sdp,
+                        "type": "offer",
+                        "transport_session_id": self.tsid,
+                    },
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(app.registry.peers, 1)
+            self.assertEqual(_session_channels(manager, self.tsid), ["video"])
+            await browser.close()  # never answer; disappear mid-negotiation
+            await _wait_for(lambda: app.registry.peers == 0)
+            self.assertEqual(_session_channels(manager, self.tsid), [])
+        finally:
+            await browser.close()
+
+    async def test_superseded_video_peer_close_keeps_new_lease(self) -> None:
+        """Old video PC's delayed close must not evict the replacement:
+        token/generation semantics on the video channel (Phase 0 design)."""
+        first, _c1, offer1 = await self._browser_pc()
+        response1 = await self._post_offer(self.tsid, offer1.sdp)
+        self.assertEqual(response1.status_code, 200)
+        await self._connect(first, response1.json())
+
+        second, _c2, offer2 = await self._browser_pc()
+        response2 = await self._post_offer(self.tsid, offer2.sdp)
+        self.assertEqual(response2.status_code, 200)
+        await self._connect(second, response2.json())
+
+        try:
+            self.assertEqual(self.app.registry.peers, 2)
+            for session in self.manager.describe()["sessions"]:
+                if session["transport_session_id"] == self.tsid:
+                    self.assertEqual(session["channels"], ["video"])
+                    self.assertEqual(session["generations"]["video"], 2)
+
+            # Superseded connection's close removes only its own token.
+            await first.close()
+            await _wait_for(lambda: self.app.registry.peers == 1)
+            self.assertEqual(_session_channels(self.manager, self.tsid), ["video"])
+
+            await second.close()
+            await _wait_for(lambda: self.app.registry.peers == 0)
+            self.assertEqual(_session_channels(self.manager, self.tsid), [])
+        finally:
+            await first.close()
+            await second.close()
 
     async def test_unknown_datachannel_label_is_closed(self) -> None:
         browser = RTCPeerConnection()
