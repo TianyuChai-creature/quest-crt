@@ -70,7 +70,7 @@ class FakeSource:
             rgba=_rgba_frame(),
             pts_90k=self._t * 3000,  # 1/30 s at 90 kHz, or 1/60 -> 1500
             capture_ns=0,
-            exposure_us=100,
+            exposure_level=100,
             gain=1.0,
         )
         return self._gen, self._frame
@@ -92,6 +92,60 @@ def test_encode_packet_pts_and_timebase() -> None:
     assert len(packets) == 1
     assert packets[0].pts == 100
     assert packets[0].time_base == VIDEO_TIME_BASE == Fraction(1, 90000)
+
+
+def test_delayed_packet_pts_traceable_to_capture() -> None:
+    """A delayed packet must carry the ORIGINAL input's pts (docs §4), never
+    the currently-latest frame's, and frame_to_packet_ms (B) must be measured.
+    This is what keeps Phase 5 capture-to-display latency traceable."""
+    enc = NvEncH264Encoder(MODE_B)
+    capture_pts = [3000 * (i + 1) for i in range(6)]  # distinct capture stamps
+    emitted: list[tuple[int, float]] = []  # (packet_pts, output wall time)
+    wall_before = time.perf_counter()
+    for pts in capture_pts:
+        for packet in enc.encode(_rgba_frame(), pts_90k=pts):
+            emitted.append((packet.pts, time.perf_counter()))
+    emitted.extend((p.pts, time.perf_counter()) for p in enc.flush())
+    wall_after = time.perf_counter()
+
+    # Every emitted packet's pts is one of the ORIGINAL capture pts, in
+    # submission order — no packet is ever bound to a newer frame.
+    assert [pts for pts, _ in emitted] == capture_pts, (
+        f"packet pts {[p for p, _ in emitted]} != capture pts {capture_pts}"
+    )
+    # And the packet was emitted after its input was submitted (delay >= 0),
+    # so output wall time is a valid latency measure for its own frame.
+    for pts, out_wall in emitted:
+        assert out_wall >= wall_before
+        assert pts > 0
+    assert out_wall <= wall_after
+
+    tel = enc.telemetry()
+    assert tel.frame_to_packet_ms_avg > 0.0
+    assert tel.frame_to_packet_ms_p95 >= tel.frame_to_packet_ms_avg
+
+
+def test_pli_telemetry_timestamps() -> None:
+    """PLI -> rebuild -> first IDR packet must be observable (docs §4):
+    pli_count, last_pli_wall_ns, keyframes (=rebuilds), last_idr_wall_ns,
+    pli_to_idr_ms_last."""
+    enc = NvEncH264Encoder(MODE_A)
+    emitted: list[av.Packet] = []
+    emitted.extend(enc.encode(_rgba_frame(), pts_90k=0))
+    emitted.extend(enc.encode(_rgba_frame(), pts_90k=3000))
+    enc.request_idr()
+    t_pli = time.perf_counter()
+    emitted.extend(enc.encode(_rgba_frame(), pts_90k=6000))
+    emitted.extend(enc.encode(_rgba_frame(), pts_90k=9000))
+    emitted.extend(enc.flush())
+    assert any(p.is_keyframe for p in emitted)
+
+    tel = enc.telemetry()
+    assert tel.pli_count == 1
+    assert abs(tel.last_pli_wall_ns / 1e9 - t_pli) < 0.1
+    assert tel.keyframes == 1  # one rebuild
+    assert tel.last_idr_wall_ns > tel.last_pli_wall_ns
+    assert 0.0 <= tel.pli_to_idr_ms_last < 2000.0  # bounded, in ms
 
 
 def test_force_idr_produces_keyframe() -> None:

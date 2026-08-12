@@ -372,21 +372,33 @@ class VideoPipeline:
                     "bitrate": self.encoder._mode.bitrate,  # noqa: SLF001
                 },
                 "frames_encoded": enc.frames_encoded,
-                "keyframes": enc.keyframes,
-                "encode_ms_avg": round(enc.encode_ms_avg, 3),
+                "keyframes": enc.keyframes,  # == encoder rebuild count
+                "encode_ms_avg": round(enc.encode_ms_avg, 3),  # (A) one call
                 "encode_ms_p95": round(enc.encode_ms_p95, 3),
+                # (B) observed frame -> packet delay incl. the ~2-frame
+                # packet-output delay (docs §4) — the teleop-relevant metric.
+                "frame_to_packet_ms_avg": round(enc.frame_to_packet_ms_avg, 3),
+                "frame_to_packet_ms_p95": round(enc.frame_to_packet_ms_p95, 3),
                 "copies_rgb_to_av": enc.copies_rgb_to_av,
                 "copies_swscale": enc.copies_swscale,
+                "pli_count": enc.pli_count,
+                "pli_to_idr_ms_last": round(enc.pli_to_idr_ms_last, 1)
+                if enc.pli_to_idr_ms_last >= 0
+                else None,
             }
             info["zed"] = {
                 "available": self.source.available,
                 "error": self.source.error,
                 "capture_fps": round(zed.capture_fps, 1),
-                "grab_interval_ms": round(zed.grab_interval_ms, 2),
+                # Grab-loop cadence (~1/fps at steady state), NOT latency.
+                "capture_interval_ms": round(zed.capture_interval_ms, 2),
                 "frames_captured": zed.frames_captured,
                 "frames_dropped": zed.frames_dropped,
-                "exposure_us": zed.exposure_us,
+                # 0-100 level (SDK EXPOSURE), NOT microseconds (docs §7).
+                "exposure_level": zed.exposure_level,
                 "gain": zed.gain,
+                "image_timestamp_ns": zed.image_timestamp_ns,
+                "host_receive_timestamp_ns": zed.host_receive_timestamp_ns,
             }
         if self.zed_error:
             info["pipeline_error"] = self.zed_error

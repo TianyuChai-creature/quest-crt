@@ -43,17 +43,23 @@ class ZedFrame:
 
     rgba: np.ndarray  # 2560x720 RGBA (U8_C4), zero-copy view into the ZED Mat
     pts_90k: int  # ZED capture timestamp, 90 kHz units (RTP timestamp basis)
-    capture_ns: int  # ZED SDK timestamp (ns)
-    exposure_us: int
+    capture_ns: int  # ZED SDK IMAGE timestamp (ns)
+    exposure_level: int  # 0-100 level, NOT us (see ZedTelemetry.exposure_level)
     gain: float
 
 
 @dataclass
 class ZedTelemetry:
-    exposure_us: int = 0
+    exposure_level: int = 0
     gain: float = 0.0
     capture_fps: float = 0.0
-    grab_interval_ms: float = 0.0  # mean grab-loop period, a proxy for grab latency
+    # Mean interval between successive successful grab() returns. At N fps
+    # capture this is ~1/N s (16.7 ms at 60 fps) — it is the capture cadence,
+    # NOT camera latency. Real capture latency needs IMAGE timestamp vs host
+    # receive timestamp (Phase 5); we keep both clocks' last values below.
+    capture_interval_ms: float = 0.0
+    image_timestamp_ns: int = 0  # last ZED IMAGE timestamp (camera clock)
+    host_receive_timestamp_ns: int = 0  # last grab return, perf_counter clock
     frames_captured: int = 0
     frames_dropped: int = 0  # old-frame drops (slot overwrite), Freshness Contract
 
@@ -147,6 +153,12 @@ class ZedSbsSource(threading.Thread):
             # Telemetry: exposure/gain readback every capture (cheap register
             # read). pyzed >= 5.x: VIDEO_SETTINGS (was CAMERA_SETTINGS), and
             # get_camera_settings returns (ERROR_CODE, value).
+            # EXPOSURE semantics (sl/Camera.hpp VIDEO_SETTINGS): a 0-100 LEVEL
+            # mapped linearly as a percentage of the max exposure value for the
+            # current framerate (60fps: 100 -> 10.84 ms, 0 -> 0.171 ms). It is
+            # NOT microseconds; real exposure time in us is only exposed via
+            # VIDEO_SETTINGS.EXPORSURE_TIME on GMSL2 ZED-X cameras — not on
+            # ZED Mini (USB). So telemetry reports the level, never "us".
             exposure_err, exposure = cam.get_camera_settings(
                 sl.VIDEO_SETTINGS.EXPOSURE
             )
@@ -168,16 +180,17 @@ class ZedSbsSource(threading.Thread):
                     self._telemetry.capture_fps = period_samples / (
                         period_sum / 1000.0
                     )
-                    self._telemetry.grab_interval_ms = period_sum / period_samples
+                    # Loop cadence (== 1/fps at steady state), NOT latency.
+                    self._telemetry.capture_interval_ms = period_sum / period_samples
                     self._telemetry.frames_captured = grabbed
                 period_sum = period_samples = 0
             # pts in 90 kHz units, monotonic from the camera clock.
             pts_90k = ns * 90 // 1_000_000
             frame = ZedFrame(
-                rgba=mat.get_data(),  # numpy view, zero-copy
+                rgba=mat.get_data(),  # numpy view, zero-copy (CPU mat)
                 pts_90k=pts_90k,
                 capture_ns=ns,
-                exposure_us=int(exposure) if exposure else 0,
+                exposure_level=int(exposure) if exposure else 0,
                 gain=float(gain) if gain else 0.0,
             )
             with self._new_frame:
@@ -185,8 +198,13 @@ class ZedSbsSource(threading.Thread):
                     self._telemetry.frames_dropped += 1  # old frame dropped
                 self._frame = frame
                 self._generation += 1
-                self._telemetry.exposure_us = frame.exposure_us
+                # Keep both clocks for the Phase 5 capture-latency measurement:
+                # image (camera clock) vs host receive (perf_counter, monotonic
+                # — deltas only, no cross-clock absolute comparison).
+                self._telemetry.exposure_level = frame.exposure_level
                 self._telemetry.gain = frame.gain
+                self._telemetry.image_timestamp_ns = ns
+                self._telemetry.host_receive_timestamp_ns = now_perf * 1e9
                 self._new_frame.notify_all()
         cam.close()
         self._cam = None

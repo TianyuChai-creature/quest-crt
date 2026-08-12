@@ -25,7 +25,7 @@ Phase 2 实机 offer 显示 Quest H.264 接收 capability 最高到 **`64001f` =
 | 项 | 值 |
 |---|---|
 | ZED capture | 2560×720 SBS @60 |
-| GPU resize | 1920×540 SBS @60（每眼 960×540@60） |
+| resize（swscale，CPU） | 1920×540 SBS @60（每眼 960×540@60） |
 | 宏块率 | ceil(1920/16)×ceil(540/16)=120×34=4,080 MB/帧；×60 = **244,800 MB/s** ≤ 245,760（L4.0 MaxMBPS 刚够）✓；MaxFS 4,080 ✓ |
 | 目标 | 运动连续性/temporal fidelity 优先 |
 
@@ -38,7 +38,7 @@ ZED Mini (2560×720 SBS @60)
   ↓ latest-only 采集队列（容量 2~3）
 Rectified L/R（ZED SDK 内部）
   ↓
-SBS assembly / GPU resize / crop
+SBS assembly / resize（swscale，CPU）/ crop
   ↓
 NVENC H.264（PyAV h264_nvenc，低延迟参数）
   ↓ encoded av.Packet
@@ -78,8 +78,14 @@ packet loss → NACK/RTX → 无法及时恢复 → PLI/FIR → NVENC 下一帧 
 
 **实测（2026-08-12）**：
 - aiortc 1.15.0 的 PLI/FIR 会调 `sender._send_keyframe()`，但 av.Packet 路径（`pack()`）忽略其 `__force_keyframe` 标志（`rtcrtpsender.py:316-323`）→ 桥 = 包装 `sender._send_keyframe`，PLI 时同时调用 `encoder.request_idr()`
-- ffmpeg 的 h264_nvenc 封装有**结构性 2 帧输出延迟**（preset/rc/tune/zerolatency 全组合实测同形态：输入 N 的包在提交 N+2 时返回；`tune=ull` 下 pts 正确透传）→ 用 pts FIFO 对齐输出归属；延迟 ~66ms@30fps / ~33ms@60fps 计入 Mode A/B 对比
-- PyAV 17 无法设置 `AV_FRAME_FLAG_KEY`（无 `flags` 属性），且 h264_nvenc 实测忽略 `pict_type=I` 与 `key_frame=True`（CLI 的 `-force_key_frames` 能强制 IDR，走的是 FLAG_KEY）→ **IDR 实现 = 重建编码器上下文**（新上下文首帧必为 IDR；~几十 ms，仅 PLI 事件发生；在途帧直接丢弃，符合 Freshness）
+- **Observed packet-output delay**（不是硬件结论）：当前 PyAV/FFmpeg h264_nvenc 集成中，输入 N 的包在提交 N+2 时返回（preset/rc/tune/zerolatency 全组合实测同形态；`tune=ull` 下 pts 正确透传）。**根因尚未证明是 NVENC 硬件本身**。延迟 ~66ms@30fps / ~33ms@60fps 计入 Mode A/B 对比
+- **两个指标严格区分**：
+  - **A. `encode_compute_ms`**：单次 encoder call（含拷贝/swscale）耗时，Mode A p95 ~12ms / Mode B p95 ~7ms
+  - **B. `frame_to_packet_ms`**：某个输入 frame → 其对应 encoded packet 真正可供 RTP sender 使用。**遥操作真正关心的是 B**。当前观测值 ≈ 2 帧 + 编码耗时（Mode A @30fps ≈ 66.7ms；Mode B @60fps ≈ 33.3ms），保留为 "current path observed value"，暂不展开大规模 encoder rewrite
+  - pts FIFO 同时记录提交墙钟，B 可直接从 FIFO 测量，且保证 delayed packet 归属到原始 capture frame（有测试 `test_delayed_packet_pts_traceable_to_capture` 验证）
+- PyAV 17 无法设置 `AV_FRAME_FLAG_KEY`（无 `flags` 属性），且 h264_nvenc 实测忽略 `pict_type=I` 与 `key_frame=True`（CLI 的 `-force_key_frames` 能强制 IDR，走的是 FLAG_KEY）→ **IDR 实现 = 重建编码器上下文**（新上下文首帧必为 IDR；在途帧直接丢弃，符合 Freshness）
+- **重建成本实测（2026-08-12）**：NVENC 上下文 open 本身 **~425ms**（本机 driver 580.178.04 / RTX 5060；close+open 全程 360–470ms）→ PLI 到首 IDR 包 **≈0.5s**（重建 + 2 帧输出延迟），期间 recv() 阻塞、RTP 停顿。仅 PLI 事件发生（罕见），正常流不受影响；如实记录影响，本轮不优化（不为此切换原生 NVENC SDK；若后续要攻，候选是预热备用上下文而非重建）
+- PLI→IDR 遥测（为后续测 PLI→IDR latency 准备）：`pli_count`、`keyframes`（== encoder rebuild 次数）、`last_pli_wall_ns`、`last_idr_wall_ns`、`pli_to_idr_ms_last`。不为此切换到原生 NVENC SDK
 
 ## 5. H.264 profile / level 不写死
 
@@ -99,17 +105,35 @@ Quest offer capabilities
 
 ## 6. 真实路径 copy 记账（先测，不强求 zero-copy）
 
+**实际数据路径（2026-08-12 实测代码事实，不是 "GPU zero-copy pipeline"）：**
+
 ```
-ZED SDK frame → CPU/GPU? → rectification → SBS assembly → resize → NVENC input
+ZED sl.Mat（CPU 内存，sl.MEM.CPU retrieve）
+  → numpy view（零拷贝，无 copy）
+  → AVFrame from_ndarray（CPU copy：numpy RGBA → AVFrame）
+  → swscale（CPU：Mode B resize + RGB→yuv420p 一次完成）
+  → h264_nvenc（GPU upload 发生在 encoder 内部）
 ```
 
-记录每一步：memory location、CPU copy 次数、GPU copy 次数、format conversion、平均耗时、p95 耗时、queue depth。
+结论表述：**hardware encode validated；GPU / low-copy capture-to-encoder path not yet optimized**。这不阻塞 Phase 3——当前为了「绝对 zero-copy」重写 ZED pipeline 没有收益，第一阶段先用可测路径跑出数据。
 
-原则：**zero-copy where possible，otherwise bounded-copy**。若一次 GPU blit 成本很低，不为理论 zero-copy 把实现复杂化。第一轮先用可测路径跑出数据。
+copy ledger（telemetry 已实现）：`copies_rgb_to_av`（from_ndarray CPU copy）、`copies_swscale`（resize+格式转换）；每一步 memory location 如上（全部 CPU，除 NVENC 内部 upload）。不引入 GPU 端 ZED→NVENC 直连（Stereolabs 的 CUDA/GL 路径留待后续评估）。
 
 ## 7. ZED exposure 纳入 telemetry
 
-从真实 ZED 接入后记录：`exposure` / `gain` / `capture fps` / `grab latency`。
+从真实 ZED 接入后记录：`exposure_level` / `gain` / `capture_fps` / `capture_interval_ms`。
+
+**`EXPOSURE` 语义（sl/Camera.hpp VIDEO_SETTINGS，2026-08-12 核对）**：0–100 的**级别**，线性映射为当前帧率下最大曝光值的百分比（60fps：100 → 10.84ms，0 → 0.171ms）。**不是微秒**。真实曝光时间 µs 仅 GMSL2 ZED-X 系列可通过 `EXPOSURE_TIME` 读取——ZED Mini（USB）不可用。因此 telemetry 报告 `exposure_level = 44`（级别），**不标 µs、也不直接声称等于帧周期百分比**（SDK 语义是"最大曝光值的百分比"，60fps 时最大曝光 10.84ms < 帧周期 16.67ms）。
+
+`capture_interval_ms` = grab 循环两次成功 grab() 返回的平均间隔（60fps 稳态 ≈16.67ms = 帧间隔），**不是 camera latency**。真实 capture latency 需独立测量：
+
+```
+ZED IMAGE timestamp（camera clock） → host receive timestamp（perf_counter）
+```
+
+telemetry 已保留两端时钟（`image_timestamp_ns` / `host_receive_timestamp_ns`，均单调，只做差值），供 Phase 5 建立 capture-to-display latency 测量。
+
+完整 capture 侧指标：`camera_fps`（capture_fps）、`exposure_level`、`gain`、`image_timestamp`、`host_receive_timestamp`、`capture_interval_ms`、`frames_captured`、`frames_dropped`。
 
 原因：最终 motion blur / capture latency 不一定来自编码器。Mode A/B 对比不能只看码率与分辨率，还要观察：快速运动时的模糊、低光下 exposure 是否自动拉长。**先可观测，不自动调参**。
 
@@ -139,7 +163,7 @@ Depth、XR stereo rendering、XRMediaBinding、IPD compensation、view reproject
 ## 11. Phase 3 第一轮 Gate（全部满足才算第一轮完成）
 
 本地验证（2026-08-12，本机 ZED Mini + RTX 5060）：
-- [x] ZED Mini real capture：`VIEW.SIDE_BY_SIDE` 720p **@60fps 实测成立**（capture_fps 59.9–60.0，grab_interval 16.67ms，HD720 SBS 无降帧）
+- [x] ZED Mini real capture：`VIEW.SIDE_BY_SIDE` 720p **@60fps 实测成立**（capture_fps 59.9–60.0，capture_interval_ms 16.67ms = grab 循环间隔/帧间隔，非 camera latency；HD720 SBS 无降帧）
 - [x] NVENC：h264_nvenc 生效（healthz encoder.name，非 x264）；encode avg 6.5–9.7ms / p95 6.9–12.1ms
 - [x] WebRTC：encoded av.Packet 正常进入 aiortc RTP（本地探针经真实 RTP/RTCP 解码 Mode A 137+ 帧、Mode B 240 帧）
 - [x] 协商一致性记录：`negotiated profile-level-id=42001f vs NVENC profile=baseline`（Baseline 子集合法；Quest 实机最终确认待做）

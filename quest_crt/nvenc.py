@@ -49,12 +49,14 @@ NVENC_OPTIONS: dict[str, str] = {
     "forced_idr": "1",
 }
 
-# Measured 2026-08-12 (delay matrix: preset/rc/tune/zerolatency all give the
-# same shape): ffmpeg's h264_nvenc wrapper emits input N's packet when input
-# N+2 is submitted — a structural 2-frame delay (~66 ms at 30 fps, ~33 ms at
-# 60 fps). It is bounded and constant (no backlog accumulation), and is
-# recorded in the Mode A/B latency comparison (docs §6); outputs are matched
-# back to their input pts via a FIFO in NvEncH264Encoder.encode().
+# OBSERVED (2026-08-12, delay matrix: preset/rc/tune/zerolatency all give the
+# same shape), not a hardware conclusion: in the current PyAV/FFmpeg
+# h264_nvenc integration, input N's packet is emitted when input N+2 is
+# submitted — an observed packet-output delay of ~2 frames (~66 ms at 30 fps,
+# ~33 ms at 60 fps). Root cause not yet proven to be NVENC hardware itself.
+# It is bounded and constant (no backlog accumulation), is recorded in the
+# Mode A/B latency comparison (docs §6), and outputs are matched back to
+# their input pts via a FIFO in NvEncH264Encoder.encode().
 NVENC_OUTPUT_DELAY_FRAMES = 2
 
 # SDP profile-level-id -> NVENC profile (docs §5). Baseline is the Phase 2
@@ -89,11 +91,21 @@ MODE_B = VideoMode("B", 1920, 540, 60, 6_000_000)  # motion: 960x540/eye @60
 @dataclass
 class EncoderTelemetry:
     frames_encoded: int = 0
-    keyframes: int = 0
-    encode_ms_avg: float = 0.0
+    keyframes: int = 0  # IDR count == encoder rebuild count (docs §4)
+    encode_ms_avg: float = 0.0  # (A) one encode() call, incl. copies/swscale
     encode_ms_p95: float = 0.0
+    # (B) frame_to_packet_ms: input frame submission -> its encoded packet
+    # actually available to the RTP sender (FIFO-attributed, docs §4). This is
+    # the metric teleoperation cares about, and where the observed ~2-frame
+    # packet-output delay shows up.
+    frame_to_packet_ms_avg: float = 0.0
+    frame_to_packet_ms_p95: float = 0.0
     copies_rgb_to_av: int = 0  # numpy RGBA -> AVFrame (docs §6 copy ledger)
     copies_swscale: int = 0  # resize + yuv420p conversion (docs §6)
+    pli_count: int = 0  # PLI/FIR requests received via the bridge
+    last_pli_wall_ns: int = 0  # monotonic ns of the last PLI/FIR
+    last_idr_wall_ns: int = 0  # monotonic ns when the first IDR packet was emitted
+    pli_to_idr_ms_last: float = -1.0  # last measured PLI -> first IDR packet
     profile: str = ""
 
 
@@ -112,7 +124,12 @@ class NvEncH264Encoder:
         self._idr_requested = False
         self._telemetry = EncoderTelemetry()
         self._encode_times: list[float] = []
-        self._pending_pts: list[int] = []  # input pts FIFO for delayed output
+        self._f2p_times: list[float] = []
+        # Input FIFO for the delayed output: (pts_90k, submit_wall_ns). The
+        # packet that comes out now belongs to the entry at the front — this
+        # is what keeps the delayed packet traceable to its ORIGINAL capture
+        # frame (not the currently-latest one).
+        self._pending_pts: list[tuple[int, int]] = []
         self._ctx: Any = None
         self._open()
 
@@ -166,6 +183,8 @@ class NvEncH264Encoder:
         """PLI/FIR bridge: force the next encoded frame to be an IDR."""
         with self._lock:
             self._idr_requested = True
+            self._telemetry.pli_count += 1
+            self._telemetry.last_pli_wall_ns = time.perf_counter_ns()
 
     def _close(self) -> None:
         if self._ctx is not None:
@@ -181,9 +200,13 @@ class NvEncH264Encoder:
         ignores both ``pict_type=PictureType.I`` and ``key_frame=True``,
         while ffmpeg CLI's ``-force_key_frames`` (which sets FLAG_KEY) does
         force an IDR. A freshly opened encoder emits its first frame as an
-        IDR, so a requested IDR rebuilds the context: ~tens of ms, bounded
-        to the (rare) PLI/FIR event, and freshness-safe (in-flight frames
-        are dropped rather than queued)."""
+        IDR, so a requested IDR rebuilds the context. Measured rebuild cost
+        on this driver/GPU: context open alone ~425 ms (close+open 360-470
+        ms) — a PLI therefore stalls the stream ~0.5 s (PLI -> first IDR
+        packet). Recorded as a real fact with real impact; only occurs on
+        the (rare) PLI/FIR event; not yet optimized (no native NVENC SDK
+        switch for this). Freshness-safe: in-flight frames are dropped
+        rather than queued."""
         with self._lock:
             if not self._idr_requested:
                 return
@@ -192,24 +215,64 @@ class NvEncH264Encoder:
         self._close()
         self._open()
         with self._lock:
+            # keyframes == encoder rebuild count (every rebuild's first frame
+            # is an IDR; see docs §4).
             self._telemetry.keyframes += 1
 
     def flush(self) -> list[av.Packet]:
         """Drain remaining buffered packets (tests / shutdown only)."""
         packets = self._ctx.encode(None)
+        now_ns = time.perf_counter_ns()
         for packet in packets:
             if self._pending_pts:
-                packet.pts = self._pending_pts.pop(0)
+                pts, submit_ns = self._pending_pts.pop(0)
+                packet.pts = pts
+                self._note_packet(now_ns, submit_ns, packet)
             packet.time_base = VIDEO_TIME_BASE
         return packets
+
+    @staticmethod
+    def _rolling_stats(times: list[float]) -> tuple[float, float]:
+        """(avg, p95) over the last <=300 samples, truncating the list."""
+        if len(times) > 300:
+            del times[: len(times) - 300]
+        avg = sum(times) / len(times)
+        p95 = sorted(times)[int(len(times) * 0.95) - 1]
+        return avg, p95
+
+    def _note_packet(self, now_ns: int, submit_ns: int, packet: av.Packet) -> None:
+        """Attribute an emitted packet: (B) frame_to_packet delay + IDR stamps."""
+        with self._lock:
+            self._f2p_times.append((now_ns - submit_ns) / 1e6)
+            self._telemetry.frame_to_packet_ms_avg, self._telemetry.frame_to_packet_ms_p95 = (
+                self._rolling_stats(self._f2p_times)
+            )
+            if packet.is_keyframe:
+                # Guard: only measure PLI->IDR when this IDR responds to a
+                # PLI newer than the previous IDR — otherwise mixing a stale
+                # IDR stamp with a fresh PLI stamp yields garbage (measured:
+                # 109 s across connections).
+                if self._telemetry.last_pli_wall_ns > self._telemetry.last_idr_wall_ns:
+                    self._telemetry.pli_to_idr_ms_last = (
+                        now_ns - self._telemetry.last_pli_wall_ns
+                    ) / 1e6
+                self._telemetry.last_idr_wall_ns = now_ns
 
     def encode(self, rgba: Any, pts_90k: int) -> list[av.Packet]:
         """Encode one RGBA numpy frame -> list of av.Packets (usually one).
 
-        Copy ledger (docs §6, all measured):
-          1. numpy RGBA -> AVFrame (from_ndarray copy)
-          2. swscale: resize (Mode B) + RGB -> yuv420p
-          GPU upload happens inside NVENC itself.
+        Actual data path (docs §6 copy ledger; hardware encode validated,
+        GPU / low-copy capture-to-encoder path NOT yet optimized):
+
+          ZED sl.Mat (CPU memory, sl.MEM.CPU)
+            -> numpy view (zero-copy, no copy)
+            -> AVFrame from_ndarray (CPU copy: numpy RGBA -> AVFrame)
+            -> swscale (CPU: resize [Mode B] + RGB -> yuv420p)
+            -> NVENC (GPU upload happens inside the encoder)
+
+        The emitted packet's pts is FIFO-attributed to the ORIGINAL capture
+        frame's pts_90k (output arrives delayed by NVENC_OUTPUT_DELAY_FRAMES),
+        so a delayed packet stays traceable to its source capture timestamp.
         """
         mode = self._mode
         t0 = time.perf_counter()
@@ -226,30 +289,30 @@ class NvEncH264Encoder:
 
         self._maybe_rebuild_for_idr()
 
+        # submit time = the moment the frame is handed to the encoder.
+        submit_ns = time.perf_counter_ns()
         packets = self._ctx.encode(frame)
         # Output arrives delayed by NVENC_OUTPUT_DELAY_FRAMES frames; the
-        # packet that comes out now belongs to the input whose pts is at the
-        # front of the FIFO. Freshness cap: never let the FIFO grow unbounded.
-        self._pending_pts.append(pts_90k)
+        # packet that comes out now belongs to the input at the FIFO front
+        # (pts + submission wall time). Freshness cap: never grow unbounded.
+        self._pending_pts.append((pts_90k, submit_ns))
         if len(self._pending_pts) > NVENC_OUTPUT_DELAY_FRAMES + 2:
             del self._pending_pts[: len(self._pending_pts) - NVENC_OUTPUT_DELAY_FRAMES]
+        now_ns = time.perf_counter_ns()
         for packet in packets:
             if self._pending_pts:
-                packet.pts = self._pending_pts.pop(0)
+                pts, prev_submit_ns = self._pending_pts.pop(0)
+                packet.pts = pts
+                self._note_packet(now_ns, prev_submit_ns, packet)
             packet.time_base = VIDEO_TIME_BASE
 
         encode_ms = (time.perf_counter() - t0) * 1000.0
         with self._lock:
             self._telemetry.frames_encoded += 1
             self._encode_times.append(encode_ms)
-            if len(self._encode_times) > 300:
-                self._encode_times = self._encode_times[-300:]
-            self._telemetry.encode_ms_avg = sum(self._encode_times) / len(
-                self._encode_times
+            self._telemetry.encode_ms_avg, self._telemetry.encode_ms_p95 = (
+                self._rolling_stats(self._encode_times)
             )
-            self._telemetry.encode_ms_p95 = sorted(self._encode_times)[
-                int(len(self._encode_times) * 0.95) - 1
-            ]
         return packets
 
 
