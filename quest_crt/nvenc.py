@@ -105,7 +105,15 @@ class EncoderTelemetry:
     pli_count: int = 0  # PLI/FIR requests received via the bridge
     last_pli_wall_ns: int = 0  # monotonic ns of the last PLI/FIR
     last_idr_wall_ns: int = 0  # monotonic ns when the first IDR packet was emitted
-    pli_to_idr_ms_last: float = -1.0  # last measured PLI -> first IDR packet
+    # Recovery-path latency, start/end verified 2026-08-12:
+    #   START = RTCP PLI received by server. aiortc 1.15.0 calls
+    #           _send_keyframe() synchronously from its RTCP receive handler
+    #           (rtcrtpsender.py:279-281), so request_idr() runs at PLI
+    #           receipt time (measured 2-9 ms after client injection).
+    #   END   = the rebuilt encoder's first IDR packet attributed/emitted
+    #           in _note_packet (available to the RTP sender).
+    # It is NOT just the encoder close/open duration. Measured ~0.36-0.47 s.
+    pli_to_idr_ms_last: float = -1.0
     profile: str = ""
 
 

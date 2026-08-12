@@ -85,6 +85,15 @@ packet loss → NACK/RTX → 无法及时恢复 → PLI/FIR → NVENC 下一帧 
   - pts FIFO 同时记录提交墙钟，B 可直接从 FIFO 测量，且保证 delayed packet 归属到原始 capture frame（有测试 `test_delayed_packet_pts_traceable_to_capture` 验证）
 - PyAV 17 无法设置 `AV_FRAME_FLAG_KEY`（无 `flags` 属性），且 h264_nvenc 实测忽略 `pict_type=I` 与 `key_frame=True`（CLI 的 `-force_key_frames` 能强制 IDR，走的是 FLAG_KEY）→ **IDR 实现 = 重建编码器上下文**（新上下文首帧必为 IDR；在途帧直接丢弃，符合 Freshness）
 - **重建成本实测（2026-08-12）**：NVENC 上下文 open 本身 **~425ms**（本机 driver 580.178.04 / RTX 5060；close+open 全程 360–470ms）→ PLI 到首 IDR 包 **≈0.5s**（重建 + 2 帧输出延迟），期间 recv() 阻塞、RTP 停顿。仅 PLI 事件发生（罕见），正常流不受影响；如实记录影响，本轮不优化（不为此切换原生 NVENC SDK；若后续要攻，候选是预热备用上下文而非重建）
+
+**normal-path vs recovery-path latency（明确区分，2026-08-12）**：
+
+| 路径 | 定义 | 实测 |
+|---|---|---|
+| **normal-path**（每帧发生） | frame 提交 → 其 encoded packet 可供 RTP sender（= f2p，含 observed ~2 帧输出延迟） | Mode B avg **33.4ms** / Mode A ≈ **66.7ms**；encode_compute_ms（A 指标）单独可查 |
+| **recovery-path**（仅 PLI/FIR） | RTCP PLI 被服务端接收 → encoder rebuild（close+open ~425ms）→ 新 encoder 首 IDR packet | **~360–470ms**（`pli_to_idr_ms_last` 直接测量） |
+
+`pli_to_idr_ms` 起止点已核实（aiortc 1.15.0 `rtcrtpsender.py:279-281` 在 RTCP 接收处同步调 `_send_keyframe`）：起点 = **RTCP PLI 被服务端接收**（注入后 2–9ms 内可观测），终点 = **新 encoder 产生首个 IDR packet**（非仅 close/open 时长）。恢复路径**不阻塞 Mode A/B 实机**；**暂不优化**。若实机丢包/重连时明显出现 ~0.5s freeze，再单独开优化任务，优先调查「不重建 encoder、直接 force next IDR」的实现路径。
 - PLI→IDR 遥测（为后续测 PLI→IDR latency 准备）：`pli_count`、`keyframes`（== encoder rebuild 次数）、`last_pli_wall_ns`、`last_idr_wall_ns`、`pli_to_idr_ms_last`。不为此切换到原生 NVENC SDK
 
 ## 5. H.264 profile / level 不写死
