@@ -12,6 +12,7 @@ dependencies = [
     "aiortc>=1.13.0",
     "cryptography>=44.0.0",
     "fastapi>=0.115.0",
+    "pyzed",
     "uvicorn[standard]>=0.34.0",
 ]
 
@@ -29,6 +30,9 @@ quest_crt = ["static/*.html"]
 
 [tool.ruff]
 line-length = 100
+
+[tool.uv.sources]
+pyzed = { url = "https://download.stereolabs.com/zedsdk/5.4/whl/linux_x86_64/pyzed-5.4-cp313-cp313-linux_x86_64.whl" }
 
 [dependency-groups]
 dev = [

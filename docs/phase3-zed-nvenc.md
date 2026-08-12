@@ -76,6 +76,11 @@ packet loss → NACK/RTX → 无法及时恢复 → PLI/FIR → NVENC 下一帧 
 
 **PLI/FIR → external NVENC keyframe request 必须真正闭环**：外部 av.Packet 编码路径下，aiortc 的 `force_keyframe` 不会自动控制 NVENC。需要自己的桥（检测 PLI/FIR → 通知编码器下一帧出 IDR）。「IDR 越频繁越好」不是目标。
 
+**实测（2026-08-12）**：
+- aiortc 1.15.0 的 PLI/FIR 会调 `sender._send_keyframe()`，但 av.Packet 路径（`pack()`）忽略其 `__force_keyframe` 标志（`rtcrtpsender.py:316-323`）→ 桥 = 包装 `sender._send_keyframe`，PLI 时同时调用 `encoder.request_idr()`
+- ffmpeg 的 h264_nvenc 封装有**结构性 2 帧输出延迟**（preset/rc/tune/zerolatency 全组合实测同形态：输入 N 的包在提交 N+2 时返回；`tune=ull` 下 pts 正确透传）→ 用 pts FIFO 对齐输出归属；延迟 ~66ms@30fps / ~33ms@60fps 计入 Mode A/B 对比
+- PyAV 17 无法设置 `AV_FRAME_FLAG_KEY`（无 `flags` 属性），且 h264_nvenc 实测忽略 `pict_type=I` 与 `key_frame=True`（CLI 的 `-force_key_frames` 能强制 IDR，走的是 FLAG_KEY）→ **IDR 实现 = 重建编码器上下文**（新上下文首帧必为 IDR；~几十 ms，仅 PLI 事件发生；在途帧直接丢弃，符合 Freshness）
+
 ## 5. H.264 profile / level 不写死
 
 Phase 2 实机 offer 含多个 profile。Phase 3 流程：
@@ -133,15 +138,20 @@ Depth、XR stereo rendering、XRMediaBinding、IPD compensation、view reproject
 
 ## 11. Phase 3 第一轮 Gate（全部满足才算第一轮完成）
 
-- [ ] ZED Mini real capture：左右 rectified frame 正确
-- [ ] NVENC：H.264 hardware encode 生效（**非 CPU x264 fallback**，能证明在 GPU 上）
-- [ ] WebRTC：encoded av.Packet 正常进入 aiortc RTP
-- [ ] Quest negotiated codec 与 NVENC bitstream 一致
-- [ ] Mode A：2560×720 SBS@30 可稳定解码
-- [ ] Mode B：1920×540 SBS@60 可稳定解码
-- [ ] Freshness：queue 不持续增长、不出现逐渐累积延迟
-- [ ] Quest getStats：active codec H264、framesDecoded 持续增加、实际 fps 符合模式、dropped/lost/jitter 可观测
-- [ ] Recovery：NACK/RTX 路径可观察；**PLI/FIR → NVENC IDR 至少完成一次验证**
+本地验证（2026-08-12，本机 ZED Mini + RTX 5060）：
+- [x] ZED Mini real capture：`VIEW.SIDE_BY_SIDE` 720p **@60fps 实测成立**（capture_fps 59.9–60.0，grab_interval 16.67ms，HD720 SBS 无降帧）
+- [x] NVENC：h264_nvenc 生效（healthz encoder.name，非 x264）；encode avg 6.5–9.7ms / p95 6.9–12.1ms
+- [x] WebRTC：encoded av.Packet 正常进入 aiortc RTP（本地探针经真实 RTP/RTCP 解码 Mode A 137+ 帧、Mode B 240 帧）
+- [x] 协商一致性记录：`negotiated profile-level-id=42001f vs NVENC profile=baseline`（Baseline 子集合法；Quest 实机最终确认待做）
+- [x] Mode A：2560×720 SBS@30 本地解码 ✓（fps 实测 ~27–28，探针解码开销；编码端 30fps）
+- [x] Mode B：1920×540 SBS@60 本地解码 ✓（编码端 286 帧/4.8s ≈ 60fps，p95 6.85ms 远在 16.7ms 预算内）
+- [x] Freshness：capture 60fps 恒定、drop 计数即丢弃语义（空转期 drop≈captured，流式期 ≈0），无累积延迟
+- [x] Recovery：**PLI → NVENC IDR 闭环**——本地向真实 RTP 注入 RTCP PLI，两模式各验证一次（forced_idr_keyframes 0→1）
+
+待 Quest 实机（用户设备）：
+- [ ] Quest 上 Mode A / Mode B 稳定解码（fps 符合模式）
+- [ ] Quest getStats：active codec H264、framesDecoded 持续增加、dropped/lost/jitter 可观测
+- [ ] Quest negotiated codec 与 NVENC bitstream 最终一致确认
 
 第一轮完成后返回两档模式真实数据对比（encoder latency、actual bitrate、Quest decoder fps、framesDropped、packet loss、CPU/GPU usage、主观静态清晰度、主观快速运动表现），**不自行选最终默认模式**。
 

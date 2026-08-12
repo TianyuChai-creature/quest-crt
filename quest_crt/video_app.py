@@ -1,4 +1,4 @@
-"""Phase 1: video signaling app (:8002) with a synthetic SBS source.
+"""Phase 1/3: video signaling app (:8002).
 
 Browser is the offerer: a recvonly video transceiver plus a
 ``video-control`` DataChannel created before ``createOffer`` (so the SCTP
@@ -7,8 +7,11 @@ an answer to a recvonly offer only comes out ``sendonly`` when a local
 track is attached before ``setRemoteDescription``; without one the answer
 is directionless/inactive (see ``docs/stage1-revise.md`` §1).
 
-No ZED / NVENC yet: the source is a procedurally generated SBS test
-pattern, produced with plain ``bytearray`` (no numpy dependency).
+Source: Phase 2 used a procedurally generated SBS test pattern
+(``SyntheticSbsTrack``, no numpy dependency). Phase 3 adds the production
+path (``PHASE3_MODE=A|B``, docs/phase3-zed-nvenc.md): ZED Mini SBS capture
+-> NVENC H.264 -> ``EncodedVideoTrack`` (av.Packet) -> aiortc RTP/RTCP,
+with the PLI/FIR -> NVENC IDR bridge on the sender.
 """
 
 from __future__ import annotations
@@ -32,6 +35,17 @@ from quest_crt.transport_session import (
     TransportSessionManager,
     validate_transport_session_id,
 )
+from quest_crt.nvenc import (
+    EncodedVideoTrack,
+    MODE_A,
+    MODE_B,
+    NvEncH264Encoder,
+    VideoMode,
+)
+from quest_crt.zed_source import ZedSbsSource
+
+# Phase 3 mode: "synthetic" (default, regression-safe) | "A" | "B".
+PHASE3_MODE = os.environ.get("PHASE3_MODE", "synthetic").strip().upper()
 
 HOST = os.environ.get("POSE_HOST", "0.0.0.0")
 VIDEO_PORT = int(os.environ.get("VIDEO_PORT", "8002"))
@@ -283,6 +297,102 @@ def parse_negotiated_video_codec(sdp: str) -> dict[str, Any] | None:
     return None
 
 
+class VideoPipeline:
+    """Shared Phase 3 source -> NVENC -> track pipeline.
+
+    One pipeline per app; the same track feeds every peer (single-client
+    scenario — Quest is single-tab/single-session). Fails visibly (healthz
+    ``zed_error`` / WARNING) instead of silently falling back when
+    ``PHASE3_MODE=A|B`` is requested but the hardware path is unavailable;
+    the synthetic source remains the default mode for regression safety.
+    """
+
+    def __init__(self, mode: str) -> None:
+        self.mode_name = mode
+        self.source: ZedSbsSource | None = None
+        self.encoder: NvEncH264Encoder | None = None
+        self.track: EncodedVideoTrack | None = None
+        self.zed_error: str | None = None
+        if mode != "SYNTHETIC":
+            self._build(mode)
+
+    def _build(self, mode: str) -> None:
+        video_mode: VideoMode
+        if mode == "A":
+            video_mode = MODE_A
+        elif mode == "B":
+            video_mode = MODE_B
+        else:
+            raise ValueError(
+                f"PHASE3_MODE must be A|B|synthetic, got {mode!r}"
+            )
+        try:
+            self.source = ZedSbsSource()
+            # Round 1 profile: baseline (Phase 2 proven contract). Docs §5:
+            # the negotiated profile-level-id is checked against the encoder
+            # profile after negotiation; High-profile NVENC is a later round.
+            self.encoder = NvEncH264Encoder(video_mode, profile="baseline")
+            self.track = EncodedVideoTrack(self.source, self.encoder)
+        except Exception as exc:
+            self.zed_error = str(exc)
+            print(
+                f"[pipeline] Phase 3 init failed ({exc}); "
+                f"synthetic fallback active — PHASE3_MODE={mode}",
+                flush=True,
+            )
+
+    def start(self) -> None:
+        if self.source is not None and not self.source.is_alive():
+            self.source.start_capture()
+            print(
+                f"[pipeline] ZED capture started "
+                f"({self.encoder._mode.out_width}x{self.encoder._mode.out_height}"
+                f"@{self.encoder._mode.out_fps}, "
+                f"profile={self.encoder.profile})",
+                flush=True,
+            )
+
+    def request_idr(self) -> None:
+        if self.encoder is not None:
+            self.encoder.request_idr()
+
+    def describe(self) -> dict[str, Any]:
+        info: dict[str, Any] = {"mode": self.mode_name}
+        info: dict[str, Any] = {"mode": self.mode_name}
+        if self.encoder is not None and self.source is not None:
+            enc = self.encoder.telemetry()
+            zed = self.source.telemetry()
+            info["encoder"] = {
+                "name": self.encoder.encoder_name,
+                "profile": self.encoder.profile,
+                "out": {
+                    "width": self.encoder._mode.out_width,  # noqa: SLF001
+                    "height": self.encoder._mode.out_height,  # noqa: SLF001
+                    "fps": self.encoder._mode.out_fps,  # noqa: SLF001
+                    "bitrate": self.encoder._mode.bitrate,  # noqa: SLF001
+                },
+                "frames_encoded": enc.frames_encoded,
+                "keyframes": enc.keyframes,
+                "encode_ms_avg": round(enc.encode_ms_avg, 3),
+                "encode_ms_p95": round(enc.encode_ms_p95, 3),
+                "copies_rgb_to_av": enc.copies_rgb_to_av,
+                "copies_swscale": enc.copies_swscale,
+            }
+            info["zed"] = {
+                "available": self.source.available,
+                "error": self.source.error,
+                "capture_fps": round(zed.capture_fps, 1),
+                "grab_interval_ms": round(zed.grab_interval_ms, 2),
+                "frames_captured": zed.frames_captured,
+                "frames_dropped": zed.frames_dropped,
+                "exposure_us": zed.exposure_us,
+                "gain": zed.gain,
+            }
+        if self.zed_error:
+            info["pipeline_error"] = self.zed_error
+        return info
+
+
 def build_video_app(
     transport_sessions: TransportSessionManager,
     negotiation_timeout: float = 20.0,
@@ -317,10 +427,15 @@ def build_video_app(
         allow_headers=["*"],
     )
     video_app.registry = registry  # exposed for tests and /healthz
+    video_app.pipeline = VideoPipeline(PHASE3_MODE)  # exposed for tests
 
     @video_app.get("/healthz")
     async def video_healthz() -> dict[str, Any]:
-        return {"ok": True, "registry": registry.describe()}
+        return {
+            "ok": True,
+            "registry": registry.describe(),
+            "pipeline": video_app.pipeline.describe(),
+        }
 
     @video_app.post("/api/webrtc/video/offer")
     async def video_webrtc_offer(
@@ -391,7 +506,24 @@ def build_video_app(
             # track only needs to exist before createAnswer. aiortc reuses
             # the recvonly transceiver it created for the remote m-line and
             # upgrades it to sendrecv, so the answer is still sendonly.
-            peer.addTrack(SyntheticSbsTrack())
+            pipeline = video_app.pipeline
+            pipeline.start()
+            track = pipeline.track if pipeline.track is not None else SyntheticSbsTrack()
+            peer.addTrack(track)
+            # Phase 3 PLI/FIR -> NVENC IDR bridge (docs/phase3-zed-nvenc.md
+            # §4): aiortc's av.Packet path ignores its own __force_keyframe
+            # (rtcrtpsender.py:316-323), so wrap the sender's keyframe hook —
+            # every PLI/FIR also asks NVENC to emit a true IDR next frame.
+            sender = next((s for s in peer.getSenders() if s.track is track), None)
+            if sender is not None and not getattr(sender, "_p3_idr_bridge", False):
+                orig_send_keyframe = sender._send_keyframe
+
+                def _bridged_send_keyframe() -> None:
+                    orig_send_keyframe()
+                    pipeline.request_idr()
+
+                sender._send_keyframe = _bridged_send_keyframe
+                sender._p3_idr_bridge = True
             answer = await peer.createAnswer()
             await peer.setLocalDescription(answer)
         except Exception as exc:
@@ -402,6 +534,18 @@ def build_video_app(
 
         negotiated = parse_negotiated_video_codec(answer.sdp)
         registry.set_negotiated_codec(peer, negotiated)
+        # Phase 3 docs §5: bitstream must stay consistent with the SDP
+        # contract. Round 1 encodes Baseline; log the negotiated profile for
+        # the record (a negotiated High profile receiving Baseline is legal —
+        # Baseline is a subset; the reverse would be a violation).
+        pipeline = video_app.pipeline
+        if pipeline.encoder is not None and negotiated is not None:
+            print(
+                f"[pipeline] negotiated profile-level-id="
+                f"{negotiated.get('profileLevelId')} "
+                f"vs NVENC profile={pipeline.encoder.profile}",
+                flush=True,
+            )
         if negotiated is None:
             print(
                 f"WARNING: no video codec parsed from answer for {client_name}",
