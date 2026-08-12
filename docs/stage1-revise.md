@@ -156,7 +156,7 @@ Quest SDP offer → 读取 H.264 fmtp profile-level-id
   → NVENC 参数与协商结果严格一致
 ```
 
-**禁止 SDP 宣称一种 profile/level 而实际 bitstream 发另一种**。目标规格 2560×720@60 需 Level ≥4.2（宏块率 432,000 MB/s）；内建 `H264Encoder` 硬编码 Baseline（`codecs/h264.py:281`）且无 bf/tune 控制，**仅用于 smoke test**（见 §4 Phase 2）。
+**禁止 SDP 宣称一种 profile/level 而实际 bitstream 发另一种**。目标规格 2560×720@60：宏块数 = ceil(2560/16)×ceil(720/16) = 160×45 = 7,200 MB/帧，@60fps = 432,000 MB/s。对照 Annex A 单流限制：MaxFS 7,200 要求 Level ≥4.0，MaxMBPS 432,000 要求 Level ≥4.2（L4/L4.1 的 245,760 不够）→ **需 Level ≥4.2**；内建 `H264Encoder` 硬编码 Baseline（`codecs/h264.py:281`）且无 bf/tune 控制，**仅用于 smoke test**（见 §4 Phase 2）。
 
 ### 2.6 Quest 渲染（Phase 4）
 
@@ -279,11 +279,14 @@ depth DataChannel 特性钉死：`unordered`、`latest-only`、低/零 retransmi
 
 **服务端**：signaling 顺序 `setRemoteDescription → addTrack → createAnswer → setLocalDescription`（§1.1 表行 2 实测）；answer 后解析并记录 negotiated codec（mimeType / payloadType / profile-level-id / packetization-mode / clockRate）入 registry 与 `/health`；非 H.264 协商打 WARNING（不得静默 fallback）；协商超时守卫（offer 后不连接 → 超时强制 close + lease 释放）。
 
-**前端**：offer 侧 `setCodecPreferences([h264])`；ontrack 接普通 `<video>`（autoplay/muted/playsinline）供人工观察 SBS；`getStats()` 每 2s 采样并记录（codec / framesReceived / framesDecoded / framesDropped / framesPerSecond / bytesReceived / packetsLost / jitter），状态区与 console 输出。
+**前端**：offer 侧 `setCodecPreferences([h264])`；ontrack 接普通 `<video>`（autoplay/muted/playsinline）供人工观察 SBS；`getStats()` 每 2s 采样并记录（codec / framesReceived / framesDecoded / framesDropped / framesPerSecond / bytesReceived / packetsLost / jitter），状态区与 console 输出。**非 XR 视频测试模式**：页面新增「开始视频测试（非 XR）」按钮（或 URL `?video-test=1` 自动启动）——启动/停止同一 `videoTransport`（同一 H.264 强制、video-control DC、getStats 采样与状态行）。Phase 2 的视频显示、getStats 和长时间播放测试**无需进入 immersive XR**，可直接在 Quest Browser 的普通 2D 页面完成（解码/渲染侧仍是 Quest 3 实机验证其自身 H.264 capability、decoder 与 getStats）。**ownership 规则**：test 运行中进入 XR → 先显式 stop 测试连接，再由 XR 生命周期以 `xr` 身份重新 start（连接不跨模式复用、reconnect timer 唯一、XR end 只关闭 XR 归属的连接，`tests/test_video_lifecycle.mjs` 覆盖）；XR 会话期间按钮禁用，XR 结束后恢复。
+
+**H.264 level 校验（1280×360@30）**：宏块数 = ceil(1280/16)×ceil(360/16) = 80×23 = 1,840 MB/帧，@30fps = 55,200 MB/s。对照 Annex A 单流限制：Level 3 的 MaxFS（1,620 < 1,840）与 MaxMBPS（40,500 < 55,200）均不满足 → **Level 3.1 是 1280×360 的最低 level**（MaxFS 3,600 ≥ 1,840、MaxMBPS 108,000 ≥ 55,200），与实测协商 `profile-level-id=42001f`（**Baseline Profile**, Level 3.1）一致；`42e01f` 才是通常所说的 Constrained Baseline Level 3.1——Phase 3 配 NVENC 时 profile 必须与 SDP 契约严格对应，命名按此为准。
 
 **Phase 2 → Phase 3 Gate（全部满足才算 PASS，Quest 3 实机）**：
 - [ ] H.264 negotiated 明确成立（服务端 registry 与浏览器 getStats 双侧确认，mimeType=H264）
 - [ ] 1280×360@30 SBS 连续稳定播放
+- [ ] 非 XR 视频测试模式可独立启动/停止（按钮或 `?video-test=1`）：视频显示、getStats 与长时间播放验证无需进入 immersive XR，可直接在 Quest Browser 普通 2D 页面完成（仍为 Quest 3 实机验证）
 - [ ] 左右 marker / SBS 布局正确（无左右翻转、无 crop 错位、无宽高比错误、无意外 resize）
 - [ ] framesDecoded 持续增长
 - [ ] 无持续性 decode failure

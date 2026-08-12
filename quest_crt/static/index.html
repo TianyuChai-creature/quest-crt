@@ -64,6 +64,19 @@
         opacity: 0.45;
       }
 
+      /* Phase 2: non-XR video test mode — independent of the XR flow. */
+      button.secondary {
+        margin-top: 10px;
+        background: #ffffff14;
+        color: #e4e4e7;
+        font-weight: 550;
+      }
+
+      button.secondary.active {
+        background: #2f7d4f;
+        color: white;
+      }
+
       .status {
         display: grid;
         grid-template-columns: 1fr auto;
@@ -127,6 +140,16 @@
       <p class="hint" id="prep-hint">
         点击后仅需<strong>一次</strong>操作：进入 XR 后将有 <strong>3 秒</strong>倒计时，
         请用双手摆成与机械臂相近的姿势。<strong>摆姿期间不要再点击</strong>；倒计时结束自动开始向 PC 传输。
+      </p>
+
+      <!-- Phase 2: non-XR video test mode (docs/stage1-revise.md §4 Phase 2).
+           Exercises the H.264 display link without entering XR: same
+           videoTransport, same video-control DC, same getStats sampling. -->
+      <button id="video-test" class="secondary">开始视频测试（非 XR）</button>
+      <p class="hint hidden" id="video-test-hint">
+        视频测试模式（无需进入 XR）：浏览器直接通过 WebRTC 拉取 synthetic SBS 彩条流，
+        在下方视频区域观察左右半屏彩条与移动 marker；「视频」状态行显示协商 codec 与帧统计
+        （H264 30fps d=… dr=… lost=…），console 每 5 个采样输出一条 [video] 汇总。
       </p>
 
       <div class="status">
@@ -235,6 +258,8 @@
       const sentCount = document.querySelector("#sent-count")
       const dropCount = document.querySelector("#drop-count")
       const prepHintEl = document.querySelector("#prep-hint")
+      const videoTestButton = document.querySelector("#video-test")
+      const videoTestHint = document.querySelector("#video-test-hint")
 
       const poseTransport = {
         // transport_session_id: page/Quest-client lifetime; carries the pose
@@ -414,6 +439,11 @@
         stats: { codec: null, last: null, samples: [] },
         attempt: 0,
         stopped: true,
+        // Ownership of the video link: "off" | "test" | "xr". A link never
+        // crosses modes: acquireVideoForXR() tears the test link down before
+        // XR starts its own; XR end closes only the XR-owned link. At most
+        // one live PeerConnection and one reconnect timer exist at any time.
+        owner: "off",
 
         setStatus(value) {
           if (videoStatus) videoStatus.textContent = value
@@ -612,17 +642,37 @@
           }
         },
 
-        start() {
+        start(mode = "test") {
+          if (!this.stopped) {
+            // Ownership rule: never restart over a live link. The only
+            // sanctioned transfer is acquireVideoForXR() (explicit stop
+            // then start); anything else must not leave two live PCs or
+            // two reconnect timers behind.
+            console.warn(`[video] start(${mode}) while running — tearing down first`)
+            this.stop()
+          }
           this.stopped = false
+          this.owner = mode
           this.connect()
         },
 
         stop() {
           this.stopped = true
+          this.owner = "off"
           clearTimeout(this.reconnectTimer)
           this.closeCurrent()
           this.setStatus("off")
         },
+      }
+
+      // Phase 2: explicit ownership handover when XR takes over the video
+      // link (docs/stage1-revise.md §4 Phase 2). A running test link is
+      // stopped first — its PC and timer are torn down — then XR starts a
+      // fresh xr-owned link. XR end calls videoTransport.stop(), which only
+      // closes the link XR owns. Covered by tests/test_video_lifecycle.mjs.
+      function acquireVideoForXR() {
+        if (!videoTransport.stopped) videoTransport.stop()
+        videoTransport.start("xr")
       }
 
       // Phase 0 capability probe for the future video channel
@@ -1303,7 +1353,8 @@
           })
           xrSession = session
           videoCapabilities.probeXRSession(session)
-          videoTransport.start()
+          acquireVideoForXR()
+          syncVideoTestButton()
           enterButton.disabled = true
           poseStreaming = false
           setSessionPhase("preparing")
@@ -1334,6 +1385,7 @@
             xrSession = null
             poseStreaming = false
             videoTransport.stop()
+            syncVideoTestButton()
             prepDeadlineMs = 0
             xrStatus.textContent = "ended"
             setSessionPhase(transportIsOpen() ? "ready" : "idle")
@@ -1509,6 +1561,7 @@
           xrSession = null
           poseStreaming = false
           prepDeadlineMs = 0
+          syncVideoTestButton()
           xrStatus.textContent = `error: ${error instanceof Error ? error.message : error}`
           setSessionPhase(transportIsOpen() ? "ready" : "idle")
           enterButton.disabled = !transportIsOpen()
@@ -1517,8 +1570,34 @@
         }
       }
 
+      // Phase 2: non-XR video test mode. The test button toggles the same
+      // videoTransport the XR flow uses, without requiring a session; the
+      // button is disabled while an XR session owns the video link.
+      function syncVideoTestButton() {
+        if (xrSession) {
+          videoTestButton.disabled = true
+          return
+        }
+        videoTestButton.disabled = false
+        const running = !videoTransport.stopped
+        videoTestButton.textContent = running ? "停止视频测试" : "开始视频测试（非 XR）"
+        videoTestButton.classList.toggle("active", running)
+        if (videoTestHint) videoTestHint.classList.toggle("hidden", !running)
+      }
+
+      videoTestButton.addEventListener("click", () => {
+        if (xrSession) return
+        if (videoTransport.stopped) videoTransport.start("test")
+        else videoTransport.stop()
+        syncVideoTestButton()
+      })
+
       enterButton.addEventListener("click", enterXR)
       connectTransport()
+      if (new URLSearchParams(location.search).has("video-test")) {
+        videoTransport.start("test")
+      }
+      syncVideoTestButton()
     </script>
   </body>
 </html>
