@@ -551,6 +551,13 @@
           // only reliable lever — verified against aiortc 1.15.0,
           // docs/stage1-revise.md §1.1 row 2.
           const codecCaps = RTCRtpReceiver.getCapabilities("video").codecs
+          // Phase 2 device acceptance: the Quest's own capability list
+          // (docs/phase2-quest-acceptance.md, step 2). Visible via remote
+          // debugging; the offer/answer below are also captured PC-side.
+          console.log(
+            "[video] receiver caps:",
+            codecCaps.map((c) => `${c.mimeType} pt=${c.payloadType}`).join(", ")
+          )
           const h264 = codecCaps.filter((c) => /h264/i.test(c.mimeType))
           if (h264.length > 0) {
             transceiver.setCodecPreferences(h264)
@@ -609,6 +616,8 @@
           try {
             const offer = await peer.createOffer()
             await peer.setLocalDescription(offer)
+            // Phase 2 device acceptance capture (docs/phase2-quest-acceptance.md).
+            console.log("[video] offer SDP:\n" + offer.sdp)
             await waitForIceGathering(peer)
             if (attempt !== tm.attempt) throw new Error("superseded connection")
 
@@ -629,6 +638,7 @@
             if (!response.ok) throw new Error(`video offer rejected (${response.status})`)
             const answer = await response.json()
             await peer.setRemoteDescription(answer)
+            console.log("[video] answer SDP:\n" + answer.sdp)
             if (attempt !== tm.attempt) throw new Error("superseded connection")
             tm.setStatus("negotiated")
             clearInterval(tm.statsTimer)

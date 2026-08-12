@@ -333,6 +333,32 @@ class VideoSignalingTests(unittest.IsolatedAsyncioTestCase):
             await first.close()
             await second.close()
 
+    async def test_video_disconnect_endpoint_closes_peer_and_releases_lease(self) -> None:
+        """Diagnostic lever: POST /api/webrtc/video/disconnect closes the
+        video peers of a tsid and releases the lease (the page then
+        reconnects on its own)."""
+        browser, _control, offer = await self._browser_pc()
+        try:
+            response = await self._post_offer(self.tsid, offer.sdp)
+            self.assertEqual(response.status_code, 200)
+            await self._connect(browser, response.json())
+            self.assertEqual(self.app.registry.peers, 1)
+
+            transport = httpx.ASGITransport(app=self.app)
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://video-signaling"
+            ) as client:
+                response = await client.post(
+                    "/api/webrtc/video/disconnect",
+                    json={"transport_session_id": self.tsid},
+                )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), {"closed": 1})
+            await _wait_for(lambda: self.app.registry.peers == 0)
+            self.assertEqual(_session_channels(self.manager, self.tsid), [])
+        finally:
+            await browser.close()
+
     async def test_unknown_datachannel_label_is_closed(self) -> None:
         browser = RTCPeerConnection()
         browser.addTransceiver("video", direction="recvonly")
@@ -424,6 +450,97 @@ class PoseVideoCoexistenceTests(unittest.IsolatedAsyncioTestCase):
                 connected.set()
 
         await asyncio.wait_for(connected.wait(), 15)
+
+    async def test_pose_disconnect_closes_pose_only_video_intact(self) -> None:
+        """Diagnostic lever: POST /api/webrtc/pose/disconnect closes the
+        pose peers of a tsid; the video channel stays untouched."""
+        pose = await self._pose_pc()
+        try:
+            await self._wait_connected(pose)
+            await _wait_for(
+                lambda: _session_channels(server.transport_sessions, self.tsid)
+                == ["pose"]
+            )
+
+            video = await self._video_pc()
+            try:
+                await self._wait_connected(video)
+                await _wait_for(
+                    lambda: set(
+                        _session_channels(server.transport_sessions, self.tsid) or []
+                    )
+                    == {"pose", "video"}
+                )
+                self.assertTrue(server.active_pose_source.describe()["active"])
+
+                transport = httpx.ASGITransport(app=server.app)
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://pose-signaling"
+                ) as client:
+                    response = await client.post(
+                        "/api/webrtc/pose/disconnect",
+                        json={"transport_session_id": self.tsid},
+                    )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"closed": 1})
+
+                await _wait_for(
+                    lambda: _session_channels(server.transport_sessions, self.tsid)
+                    == ["video"]
+                )
+                await _wait_for(
+                    lambda: not server.active_pose_source.describe()["active"]
+                )
+                # The video peer survived the pose drop.
+                self.assertEqual(server.video_app.registry.peers, 1)
+            finally:
+                await video.close()
+        finally:
+            await pose.close()
+
+    async def test_video_disconnect_closes_video_only_pose_intact(self) -> None:
+        """Diagnostic lever: POST /api/webrtc/video/disconnect closes the
+        video peers of a tsid; the pose channel stays untouched."""
+        pose = await self._pose_pc()
+        try:
+            await self._wait_connected(pose)
+            await _wait_for(
+                lambda: _session_channels(server.transport_sessions, self.tsid)
+                == ["pose"]
+            )
+
+            video = await self._video_pc()
+            try:
+                await self._wait_connected(video)
+                await _wait_for(
+                    lambda: set(
+                        _session_channels(server.transport_sessions, self.tsid) or []
+                    )
+                    == {"pose", "video"}
+                )
+
+                transport = httpx.ASGITransport(app=server.video_app)
+                async with httpx.AsyncClient(
+                    transport=transport, base_url="http://video-signaling"
+                ) as client:
+                    response = await client.post(
+                        "/api/webrtc/video/disconnect",
+                        json={"transport_session_id": self.tsid},
+                    )
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json(), {"closed": 1})
+
+                await _wait_for(
+                    lambda: _session_channels(server.transport_sessions, self.tsid)
+                    == ["pose"]
+                )
+                await _wait_for(lambda: server.video_app.registry.peers == 0)
+                # The pose processor is untouched.
+                self.assertTrue(server.active_pose_source.describe()["active"])
+            finally:
+                await video.close()
+        finally:
+            await pose.close()
 
     async def test_pose_and_video_coexist_and_tear_down_independently(self) -> None:
         pose = await self._pose_pc()

@@ -444,6 +444,17 @@ class WebRTCOffer(BaseModel):
     transport_session_id: str = Field(min_length=1, max_length=64)
 
 
+class PoseDisconnectRequest(BaseModel):
+    """Diagnostic lever for Phase 2 device acceptance (see
+    docs/phase2-quest-acceptance.md): close the pose WebRTC peers of one
+    transport session so the page's pose reconnect path is exercised
+    without touching the video channel."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    transport_session_id: str = Field(min_length=1, max_length=64)
+
+
 class PoseSourceBusyError(RuntimeError):
     """Raised when another Quest already owns the single ingress slot."""
 
@@ -1034,6 +1045,9 @@ def ensure_certificate(lan_ip: str) -> None:
 
 webrtc_peer_connections: set[RTCPeerConnection] = set()
 webrtc_processors: dict[RTCPeerConnection, PoseStreamProcessor] = {}
+# tsid per peer — lets the diagnostic pose-disconnect endpoint target one
+# transport session without touching the video channel.
+webrtc_tsids: dict[RTCPeerConnection, str] = {}
 
 
 async def close_webrtc_peer(peer: RTCPeerConnection) -> None:
@@ -1041,6 +1055,7 @@ async def close_webrtc_peer(peer: RTCPeerConnection) -> None:
     if peer not in webrtc_peer_connections:
         return
     webrtc_peer_connections.discard(peer)
+    webrtc_tsids.pop(peer, None)
     processor = webrtc_processors.pop(peer, None)
     if processor is not None:
         processor.close()
@@ -1101,6 +1116,7 @@ async def webrtc_offer(offer: WebRTCOffer, request: Request) -> dict[str, str]:
         )
     peer = RTCPeerConnection()
     webrtc_peer_connections.add(peer)
+    webrtc_tsids[peer] = offer.transport_session_id
     client = request.client
     client_name = f"{client.host}:{client.port}" if client else "unknown"
 
@@ -1175,6 +1191,29 @@ async def webrtc_offer(offer: WebRTCOffer, request: Request) -> dict[str, str]:
         await close_webrtc_peer(peer)
         raise HTTPException(status_code=500, detail="WebRTC answer was not created")
     return {"sdp": local_description.sdp, "type": local_description.type}
+
+
+@app.post("/api/webrtc/pose/disconnect")
+async def pose_disconnect(request: PoseDisconnectRequest) -> dict[str, int]:
+    """Close the pose WebRTC peers of one transport session.
+
+    The page's connectionstatechange handler sees the drop and reconnects
+    on its own (same tsid, new lease generation) — this is the pose-only
+    reconnect lever for the Phase 2 device acceptance.
+    """
+    try:
+        validate_transport_session_id(request.transport_session_id)
+    except TransportSessionError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid transport_session_id: {exc}",
+        ) from exc
+    targets = [
+        peer for peer, tsid in webrtc_tsids.items() if tsid == request.transport_session_id
+    ]
+    for peer in targets:
+        await close_webrtc_peer(peer)
+    return {"closed": len(targets)}
 
 
 @viewer_app.get("/")

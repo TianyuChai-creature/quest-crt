@@ -131,6 +131,15 @@ class VideoWebRTCOffer(BaseModel):
     transport_session_id: str = Field(min_length=1, max_length=64)
 
 
+class VideoDisconnectRequest(BaseModel):
+    """Diagnostic lever for Phase 2 device acceptance (see
+    docs/phase2-quest-acceptance.md): close the video peers of one
+    transport session so the page's reconnect path is exercised without
+    touching the pose channel."""
+
+    transport_session_id: str = Field(min_length=1, max_length=64)
+
+
 class VideoPeerRegistry:
     """Owns the video PeerConnections and their transport-session leases.
 
@@ -328,6 +337,16 @@ def build_video_app(
         client = request.client
         client_name = f"{client.host}:{client.port}" if client else "unknown"
 
+        # Phase 2 device acceptance: the PC-side log is the primary capture
+        # of the Quest offer SDP (its H.264 capability projection — payload
+        # types, profile-level-id, packetization-mode). See
+        # docs/phase2-quest-acceptance.md.
+        print(
+            f"Received video offer from {client_name} "
+            f"(tsid={offer.transport_session_id}):\n{offer.sdp}",
+            flush=True,
+        )
+
         peer = RTCPeerConnection()
         lease = transport_sessions.begin_channel(
             offer.transport_session_id, "video", client_name
@@ -426,5 +445,25 @@ def build_video_app(
             await registry.close(peer)
             raise HTTPException(status_code=500, detail="WebRTC answer was not created")
         return {"sdp": local_description.sdp, "type": local_description.type}
+
+    @video_app.post("/api/webrtc/video/disconnect")
+    async def video_disconnect(request: VideoDisconnectRequest) -> dict[str, int]:
+        """Close the video peers of one transport session.
+
+        The page's connectionstatechange handler sees the drop and
+        reconnects on its own (same tsid, new lease generation) — this is
+        the video-only reconnect lever for the Phase 2 device acceptance.
+        """
+        try:
+            validate_transport_session_id(request.transport_session_id)
+        except TransportSessionError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"invalid transport_session_id: {exc}",
+            ) from exc
+        peers = list(registry._by_tsid.get(request.transport_session_id, ()))
+        for peer in peers:
+            await registry.close(peer)
+        return {"closed": len(peers)}
 
     return video_app

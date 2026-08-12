@@ -283,21 +283,41 @@ depth DataChannel 特性钉死：`unordered`、`latest-only`、低/零 retransmi
 
 **H.264 level 校验（1280×360@30）**：宏块数 = ceil(1280/16)×ceil(360/16) = 80×23 = 1,840 MB/帧，@30fps = 55,200 MB/s。对照 Annex A 单流限制：Level 3 的 MaxFS（1,620 < 1,840）与 MaxMBPS（40,500 < 55,200）均不满足 → **Level 3.1 是 1280×360 的最低 level**（MaxFS 3,600 ≥ 1,840、MaxMBPS 108,000 ≥ 55,200），与实测协商 `profile-level-id=42001f`（**Baseline Profile**, Level 3.1）一致；`42e01f` 才是通常所说的 Constrained Baseline Level 3.1——Phase 3 配 NVENC 时 profile 必须与 SDP 契约严格对应，命名按此为准。
 
-**Phase 2 → Phase 3 Gate（全部满足才算 PASS，Quest 3 实机）**：
-- [ ] H.264 negotiated 明确成立（服务端 registry 与浏览器 getStats 双侧确认，mimeType=H264）
-- [ ] 1280×360@30 SBS 连续稳定播放
-- [ ] 非 XR 视频测试模式可独立启动/停止（按钮或 `?video-test=1`）：视频显示、getStats 与长时间播放验证无需进入 immersive XR，可直接在 Quest Browser 普通 2D 页面完成（仍为 Quest 3 实机验证）
-- [ ] 左右 marker / SBS 布局正确（无左右翻转、无 crop 错位、无宽高比错误、无意外 resize）
-- [ ] framesDecoded 持续增长
-- [ ] 无持续性 decode failure
-- [ ] dropped frames 在可接受范围
-- [ ] video-control ping/pong 正常
-- [ ] video reconnect 不影响 pose；pose reconnect 不影响 video
-- [ ] getStats 能确认 codec / decode / packet loss 状态
+**Phase 2 → Phase 3 Gate（2026-08-12 Quest 3 实机验收）**：
+- [x] H.264 negotiated 明确成立（服务端 registry 与浏览器 getStats 双侧确认，mimeType=H264）—— 9 次协商全部 `H264 pt=103 profile=42001f pm=1`，WARNING=0
+- [x] 1280×360@30 SBS 连续稳定播放（短时连续播放确认；**长稳 5–10 分钟延后**到真实 ZED/NVENC 视频阶段）
+- [x] 非 XR 视频测试模式可独立启动/停止（按钮或 `?video-test=1`）—— 验收全程多次启停验证
+- [~] 左右 marker / SBS 布局正确 —— **延后**：marker 静态观察项未解决（见 `docs/phase2-quest-acceptance.md` 开放项），视觉正确性移到真实视频阶段验证
+- [x] framesDecoded 持续增长（`d=` 状态行持续刷新）
+- [x] 无持续性 decode failure
+- [x] dropped frames 在可接受范围
+- [x] video-control ping/pong 正常
+- [x] video reconnect 不影响 pose；pose reconnect 不影响 video（5a/5b 实机：video 断→新 peer 重协商 H264、pose 零影响；pose 断→`Quest connected` +1、video 同 peer 未动；杠杆见 `docs/phase2-quest-acceptance.md` §5）
+- [x] getStats 能确认 codec / decode / packet loss 状态
 
 若最终协商为 VP8 或 Quest offer 的 H.264 capability 与 aiortc 不兼容：**不得判定通过**，以真实 SDP / capability 为准报告原因。
 
-通过后**停止优化 aiortc 内建编码器**（不在软件编码 smoke test 上追最终性能），下一阶段直接进入 Phase 3（ZED → rectified L/R → SBS → NVENC H.264 → av.Packet track → aiortc RTP/RTCP → Quest）。
+**Phase 2 PASS**（2026-08-12 Quest 3 实机，用户裁决）
+
+```
+Phase 2 PASS
+
+Validated:
+- Quest 3 real-device H.264 capabilities
+- H.264-only offer / negotiation
+- pose / video dual-PC independence
+- reconnect behavior
+- XR ownership lifecycle
+
+Deferred to real-video validation:
+- stereo visual correctness
+- long-duration playback stability
+- final decoder/render FPS
+```
+
+**约束记录（Phase 3 输入）**：Quest 实机 offer 最高广告 `64001f`（High L4.0，MaxMBPS 245,760）；2560×720@60 需 L4.2（432,000）不满足 → **Phase 3 不再以 2560×720@60 为默认目标**，改为在 L4.0 约束内选择 operating point（Mode A 2560×720 SBS@30 / Mode B 1920×540 SBS@60，详见 Phase 3 设计文档）。
+
+通过后**停止优化 aiortc 内建编码器**（不在软件编码 smoke test 上追最终性能），进入 Phase 3（ZED → rectified L/R → SBS → NVENC H.264 → av.Packet track → aiortc RTP/RTCP → Quest）。
 
 ### Phase 3 — ZED + NVENC 目标路径
 
