@@ -182,11 +182,21 @@ Depth、XR stereo rendering、XRMediaBinding、IPD compensation、view reproject
 - [x] Recovery：**PLI → NVENC IDR 闭环**——本地向真实 RTP 注入 RTCP PLI，两模式各验证一次（forced_idr_keyframes 0→1）
 
 待 Quest 实机（用户设备）：
-- [ ] Quest 上 Mode A / Mode B 稳定解码（fps 符合模式）
+- [ ] Quest 上 Mode A / Mode B 稳定解码（fps 符合模式）——**Mode B 已实测**：解码流畅、动态跟手（用户主观确认）；getStats 数值未采集
 - [ ] Quest getStats：active codec H264、framesDecoded 持续增加、dropped/lost/jitter 可观测
-- [ ] Quest negotiated codec 与 NVENC bitstream 最终一致确认
+- [ ] Quest negotiated codec 与 NVENC bitstream 最终一致确认（SDP 协商 42001f，NVENC SPS 实际 42 c0 28 = Constrained Baseline L4.0——子集关系合法，记录在案）
 
 第一轮完成后返回两档模式真实数据对比（encoder latency、actual bitrate、Quest decoder fps、framesDropped、packet loss、CPU/GPU usage、主观静态清晰度、主观快速运动表现），**不自行选最终默认模式**。
+
+### OPEN ISSUE（2026-08-12，用户指示本轮不改，留待交接）
+
+**Quest 上 NVENC 流颜色交换**：Quest 显示 Mode B（ZED+NVENC）流时，暖色变蓝/蓝变橙（用户实机两次确认：皮肤蓝紫、橙色罐头→蓝、罐头蓝边→橙）。调查结论：
+
+- 本地证据链全部干净：ZED 原始帧 RGBA 正确（两假设存 PNG 目视判定）→ 编码回环通道相关性 R↔R/G↔G/B↔B 全部 1.000 → 按 Quest 同路径解码 RTP 流肤色暖色正确 → SPS 无颜色信令（ffprobe 全 unknown）→ 601/709、limited/full 四种错配数值模拟肤色偏移 ≤±1（矩阵错配数学上不可能产生蓝紫）→ 页面纯 `<video srcObject>` 无滤镜
+- **Quest 彩条对照实验**（libx264 合成流）：白黄青绿红蓝全部正确，仅品红略偏粉（limited-range 色域边缘钳制 + 浏览器色彩管理，次要）→ Quest 解码器对 libx264 流**不**做交换
+- NVENC 与 libx264 的 SPS 头**完全一致**（42 c0 28，均无 VUI）→ 信令差异理论排除
+- 结论：交换仅出现在 **Quest × NVENC 流** 组合，本地无法复现；根因未定（Quest HW 解码器对特定码流选择错误像素格式路径的可能性最大）
+- 待办：① 同刻对照实验（本地 RTP 抓帧 vs Quest 目视，罐头入镜）做最终定位；② 候选修复方向：显式 VUI 色彩信令（bt709+limited）、试 High profile、或 Quest 端 canvas/WebGL 通道修正（合成流走 aiortc 内置 libx264 不触发，可作对照基线）
 
 ## 12. 纪律
 
