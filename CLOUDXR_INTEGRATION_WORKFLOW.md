@@ -141,4 +141,7 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 - [x] H4 operator rejected 1080p30: detail improvement was not substantial, 30 FPS motion caused
   dizziness, and sustained Quest render later fell to roughly 52-57 FPS. Final selection: 720p60.
 - [x] H4 final acceptance passed.
+- [x] Phase 5 live TLS/WSS regression: `/health` and coordinate API returned 200; one injected
+  Pose v4 produced Viewer HTS/body output with shoulders and 21 landmarks per hand, plus a
+  638-byte QSTR envelope with pose_seq 1 and 21 landmarks per hand.
 - [ ] H5-H6 pending.
