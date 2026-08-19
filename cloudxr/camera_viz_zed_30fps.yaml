@@ -1,0 +1,28 @@
+verbose: true
+source: local
+
+cameras:
+  - name: zed
+    enabled: true
+    type: zed
+    width: 1280
+    height: 720
+    fps: 30
+    bus_type: usb
+    serial_number: 0
+    stereo: true
+
+display:
+  mode: xr
+  window:
+    width: 1280
+    height: 720
+  xr:
+    near_z: 0.05
+    far_z: 100.0
+  clear_color: [0.0, 0.0, 0.0, 0.0]
+  placements:
+    zed:
+      lock_mode: lazy
+      distance: 1.0
+      stereo_baseline_mm: 50.0

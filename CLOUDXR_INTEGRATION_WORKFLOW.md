@@ -14,6 +14,8 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 - One immersive WebXR session must own both CloudXR rendering and QCRT capture.
 - NVIDIA upstream source is not vendored. Integrations use packages, configuration, and thin
   adapters.
+- The initial quality-oriented operating point is 1280x720 per eye at 30 FPS; higher frame rates
+  are out of scope unless later operator feedback requests them.
 
 ## Evidence policy
 
@@ -99,4 +101,13 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 - [x] Phase 1 automated capture: 180/180 frames, 0 failures, 60.281 FPS, 16.828 ms p95,
   monotonic camera timestamps, and correct SBS/left/right dimensions.
 - [x] H1 raw image acceptance passed by the user.
-- [ ] H2-H6 pending.
+- [x] Phase 2 isolated environment: Isaac Teleop `1.5.95rc1`, Televiz, CloudXR, CuPy CUDA 13,
+  OpenCV, and pyzed 5.4 installed in the temporary reference checkout.
+- [x] Phase 2 automated desktop smoke: synthetic ~58 FPS, replay 30 FPS, and ZED direct
+  ~69 FPS steady-state, all with zero missed renders.
+- [x] Operator selected a 30 FPS quality-oriented target; repository config added for
+  1280x720-per-eye direct ZED capture.
+- [x] Selected target verified: SDK current 29.9-30.0 FPS, measured capture 30.0 FPS,
+  Televiz window render 32-38 FPS, and zero missed renders after warm-up.
+- [x] H2 Televiz desktop acceptance passed by the user at the 30 FPS operating point.
+- [ ] H3-H6 pending.
