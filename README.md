@@ -69,6 +69,32 @@
 - `uv`
 - Quest 和 PC 位于可互相访问的网络
 
+### ZED + CloudXR 一体化模式
+
+最终验证配置为 ZED Mini 每眼 `1280x720@60`、原生双目视差、头锁定 102° 弧面。
+先按 IsaacTeleop `examples/camera_viz` 的说明建立其独立 `.venv`，并安装 CloudXR Runtime、
+CloudXR.js、Televiz、ZED SDK/pyzed 与 CuPy。然后运行：
+
+```bash
+uv sync
+CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
+  ./scripts/run_cloudxr_zed.sh --check
+CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
+  ./scripts/run_cloudxr_zed.sh
+```
+
+启动器生成一个不纳入 Git 的 `.cloudxr-client/`：仅复制已安装的 NVIDIA Web Client
+三文件，并在官方 `bundle.js` 前注入 QCRT exporter；官方缓存和 bundle 保持不变。Quest
+打开 `https://<PC-IP>:48322/client/` 后只需一次 `CONNECT`，同一个 WebXR 会话承载
+CloudXR 视频与 QCRT 人体数据。`Ctrl+C` 停止 camera_viz 和 quest-crt；CloudXR 后台服务
+保留，可用 `python -m isaacteleop.cloudxr.service stop` 单独停止。
+启动器默认等待 Quest 连接最多 300 秒，再创建 OpenXR 应用；可通过
+`QUEST_WAIT_SECONDS` 调整。
+
+该模式要求使用者分别接受 NVIDIA CloudXR EULA、Stereolabs ZED SDK 条款及
+IsaacTeleop/Televiz 上游许可。本仓不分发这些组件，只保存配置和薄适配器。传统
+`https://<PC-IP>:8000/` Quest 页面继续保留，作为无视频回滚路径。
+
 安装并启动：
 
 ```bash

@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Inject one Pose v4 frame and verify both live downstream contracts."""
+"""Verify the Viewer and StablePoseStream downstream contracts."""
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import ssl
 import sys
@@ -39,7 +40,9 @@ def _pose_frame() -> dict[str, object]:
     }
 
 
-async def _check(host: str, pose_port: int, output_port: int) -> dict[str, object]:
+async def _check(
+    host: str, pose_port: int, output_port: int, *, live: bool = False
+) -> dict[str, object]:
     tls = ssl.create_default_context()
     tls.check_hostname = False
     tls.verify_mode = ssl.CERT_NONE
@@ -47,13 +50,18 @@ async def _check(host: str, pose_port: int, output_port: int) -> dict[str, objec
     stream_url = f"wss://{host}:{output_port}/ws/stream"
     ingress_url = f"wss://{host}:{pose_port}/ws"
 
-    async with (
-        websockets.connect(viewer_url, ssl=tls) as viewer,
-        websockets.connect(stream_url, ssl=tls, max_size=8 * 1024 * 1024) as stream,
-        websockets.connect(ingress_url, ssl=tls) as ingress,
-    ):
-        await ingress.send(json.dumps(_pose_frame(), separators=(",", ":")))
+    async with contextlib.AsyncExitStack() as stack:
+        viewer = await stack.enter_async_context(websockets.connect(viewer_url, ssl=tls))
+        stream = await stack.enter_async_context(
+            websockets.connect(stream_url, ssl=tls, max_size=8 * 1024 * 1024)
+        )
+        if not live:
+            ingress = await stack.enter_async_context(
+                websockets.connect(ingress_url, ssl=tls)
+            )
+            await ingress.send(json.dumps(_pose_frame(), separators=(",", ":")))
         viewer_frame = json.loads(await asyncio.wait_for(viewer.recv(), timeout=3.0))
+        target_seq = int(viewer_frame["seq"])
 
         stream_packet = b""
         stream_frame: dict[str, object] | None = None
@@ -62,12 +70,13 @@ async def _check(host: str, pose_port: int, output_port: int) -> dict[str, objec
             if not isinstance(raw, bytes):
                 raise AssertionError("/ws/stream default format must be binary")
             envelope = decode_stream_envelope(raw)
-            if envelope["pose_seq"] == 1 and envelope["pose"] is not None:
+            if envelope["pose_seq"] >= target_seq and envelope["pose"] is not None:
                 stream_packet = raw
                 stream_frame = envelope
                 break
 
-    assert viewer_frame["seq"] == 1
+    if not live:
+        assert viewer_frame["seq"] == 1
     assert viewer_frame["representation"] == "hts-wrist-relative"
     assert viewer_frame["coordinate_transform"]["name"] == "body"
     assert set(viewer_frame) >= {"hands", "elbows", "shoulders"}
@@ -105,8 +114,20 @@ def main() -> int:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--pose-port", type=int, default=8000)
     parser.add_argument("--output-port", type=int, default=8001)
+    parser.add_argument(
+        "--live",
+        action="store_true",
+        help="observe the active Quest instead of injecting a frame",
+    )
     args = parser.parse_args()
-    print(json.dumps(asyncio.run(_check(args.host, args.pose_port, args.output_port)), indent=2))
+    print(
+        json.dumps(
+            asyncio.run(
+                _check(args.host, args.pose_port, args.output_port, live=args.live)
+            ),
+            indent=2,
+        )
+    )
     return 0
 
 

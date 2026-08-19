@@ -35,8 +35,7 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 4. **H3 - CloudXR synthetic**: stereo eye routing, color, smoothness, and comfort are accepted.
 5. **H4 - CloudXR ZED**: quality and latency are accepted against the old Phase 3 result.
 6. **H5 - Unified client**: one WebXR session carries CloudXR video and QCRT capture.
-7. **H6 - Final**: fault isolation, downstream compatibility, 30-minute stability, and operator
-   experience pass.
+7. **H6 - Final**: fault isolation, downstream compatibility, and operator experience pass.
 
 ## Execution phases
 
@@ -83,7 +82,8 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 ### Phase 7 - Integrated ZED and fault isolation
 
 - Validate video loss, pose loss, ZED loss, and short network loss independently.
-- Run the selected operating point for 30 minutes.
+- A 30-minute soak was originally planned, then explicitly waived by the user after the live
+  integration and fault-isolation runs.
 - Verify real-Teleop and DIME contracts before H6.
 
 ### Phase 8 - Handoff
@@ -158,5 +158,26 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
   age. QCRT used unordered delivery with a 30 ms packet lifetime.
 - [x] quest-crt can reuse the already accepted CloudXR TLS certificate through
   `POSE_CERT_FILE` and `POSE_KEY_FILE`, avoiding a second Quest Browser certificate exception.
-- [ ] H5 operator acceptance pending.
-- [ ] H5-H6 pending.
+- [x] H5 operator acceptance passed with the expected synthetic flowing-color video visible.
+- [x] Phase 7 video-producer isolation: pausing camera_viz for 5 seconds left QSTR running at
+  71.6 Hz (567 packets/8 seconds, 8.1 ms median capture age); ZED and video recovered without
+  restarting the XR session.
+- [x] Phase 7 pose-service isolation: stopping quest-crt for 8 seconds left ZED at 60 FPS and
+  Quest rendering at 69-72 FPS. Pose transport recovered through WSS fallback, then returned
+  automatically to WebRTC after the network recovery test.
+- [x] Phase 7 physical ZED isolation: unplug produced `grab failed; reconnecting`; camera_viz
+  stayed alive at roughly 69-72 render FPS while QSTR remained 71.6 Hz. Replug automatically
+  reached `connected`, `streaming`, and 60 FPS without restarting camera_viz.
+- [x] Phase 7 Quest Wi-Fi isolation: both remote connections became stale/lost as expected;
+  after Wi-Fi returned, CloudXR recovered and QCRT renegotiated WebRTC at roughly 69-72 FPS.
+- [x] Live downstream contracts after recovery: `/ws` emitted `hts-wrist-relative` with body
+  transform, shoulders, and 21 landmarks per hand; `/ws/stream` emitted a 638-byte QSTR `ok`
+  envelope with 21 landmarks per hand.
+- [x] The user explicitly waived the planned 30-minute soak as unnecessary.
+- [x] Final launcher preflight passed and a clean launch correctly waited for the Quest before
+  creating camera_viz. The resulting session reached ZED 60.0 FPS, Quest render 70-73 FPS,
+  and QCRT WebRTC 68-72 FPS.
+- [x] Final launcher-session checks: 346 QSTR packets in 5 seconds at 71.6 Hz with 6.7 ms
+  median capture age; live `/ws` and `/ws/stream` contracts passed again. All 38 unit tests
+  passed, including the local QSTR UDP test.
+- [ ] H6 pending.

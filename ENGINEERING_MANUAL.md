@@ -93,6 +93,41 @@ uv sync
 uv run python server.py
 ```
 
+### 4.1 ZED + CloudXR 一体化启动
+
+一体化链路为：
+
+```text
+ZED Mini -> camera_viz/Televiz -> CloudXR Runtime -> CloudXR.js
+Quest body/hand tracking ---------> QCRT -> /ws + /ws/stream
+```
+
+两条传输连接相互独立，但共享 Quest Browser 中唯一的沉浸式 `XRSession`。仓库不复制
+NVIDIA Web Client；`scripts/prepare_cloudxr_client.py` 从已安装缓存生成
+`.cloudxr-client/`，在官方 bundle 之前嵌入 `cloudxr/qcrt-exporter.js`。
+
+依赖准备完成后：
+
+```bash
+CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
+  ./scripts/run_cloudxr_zed.sh --check
+CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
+  ./scripts/run_cloudxr_zed.sh
+```
+
+启动器会重启 CloudXR 后台服务以确保使用生成客户端，并让 quest-crt 复用 CloudXR
+证书，避免 Quest Browser 对 `48322` 和 `8000` 分别放行两张自签名证书。默认关闭
+姿态 JSONL 以减少实时链路 I/O；需要记录时设置 `POSE_LOG_ENABLED=1`。可通过
+`CAMERA_CONFIG` 覆盖相机配置，但验收基线是
+`cloudxr/camera_viz_zed_60fps.yaml`。启动器会先等待 Quest 在 TCP 48322 建立连接，
+再创建 camera_viz OpenXR 应用，避免干净启动时 `XR_ERROR_FORM_FACTOR_UNAVAILABLE`；
+默认等待 300 秒，可用 `QUEST_WAIT_SECONDS` 调整。
+
+CloudXR Runtime/CloudXR.js、IsaacTeleop/Televiz 与 ZED SDK/pyzed 均须单独安装并遵守
+各自上游许可；本仓不分发这些组件。NVIDIA CloudXR EULA 必须由使用者明确接受，
+启动器不会代为接受。若视频链路不可用，传统 `https://<PC-IP>:8000/` 页面仍可独立
+采集人体数据。
+
 服务启动时会输出类似：
 
 ```text
@@ -104,7 +139,7 @@ Certificate: /path/to/quest-crt/certs/cert.pem
 
 程序通过一个 UDP 路由探测选择供局域网访问的 IP。探测不发送姿态数据；如果探测失败，会回退到主机名解析结果，最终回退到 `127.0.0.1`。多网卡、VPN 或特殊路由环境下，应确认输出 IP 确实可由 Quest 访问。
 
-### 4.1 环境变量
+### 4.2 环境变量
 
 | 变量 | 默认值 | 作用 |
 |---|---:|---|
@@ -113,6 +148,7 @@ Certificate: /path/to/quest-crt/certs/cert.pem
 | `OUTPUT_PORT` | `8001` | Viewer 页面、下游 WSS 和 API 端口 |
 | `POSE_LOG_ENABLED` | `1` | 是否记录JSONL；设为 `0` 可临时关闭 |
 | `POSE_LOG_QUEUE_FRAMES` | `2048` | 日志后台有界队列容量；满时淘汰最旧日志帧 |
+| `POSE_CERT_FILE` / `POSE_KEY_FILE` | 自动生成证书 | 成对指定外部 TLS 证书与私钥；一体化模式使用 CloudXR 证书 |
 
 示例：
 
@@ -129,7 +165,7 @@ POSE_LOG_ENABLED=0 uv run python server.py
 
 修改端口后，以终端打印的 URL 为准。两个端口不能设置为相同值。
 
-### 4.2 健康检查
+### 4.3 健康检查
 
 两个服务都提供健康检查：
 
@@ -154,7 +190,7 @@ curl -k https://127.0.0.1:8001/health
 
 `active_source.active` 表示某条 Quest 数据连接已占用入口，不等同于当前手部一定正在追踪。
 
-### 4.3 停止服务
+### 4.4 停止服务
 
 在启动终端按 `Ctrl+C`。主 Pose 服务退出后进程结束，Viewer 守护线程也随之退出。采集日志使用逐行缓冲，正常停止或意外中断时，已写入的完整行通常仍可直接读取。
 
