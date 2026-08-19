@@ -43,8 +43,12 @@ ROOT = Path(__file__).resolve().parent
 INDEX_HTML = ROOT / "static" / "index.html"
 VIEWER_HTML = ROOT / "static" / "viewer.html"
 CERT_DIR = ROOT / "certs"
-CERT_FILE = CERT_DIR / "cert.pem"
-KEY_FILE = CERT_DIR / "key.pem"
+POSE_CERT_FILE = os.environ.get("POSE_CERT_FILE")
+POSE_KEY_FILE = os.environ.get("POSE_KEY_FILE")
+if bool(POSE_CERT_FILE) != bool(POSE_KEY_FILE):
+    raise RuntimeError("POSE_CERT_FILE and POSE_KEY_FILE must be set together")
+CERT_FILE = Path(POSE_CERT_FILE) if POSE_CERT_FILE else CERT_DIR / "cert.pem"
+KEY_FILE = Path(POSE_KEY_FILE) if POSE_KEY_FILE else CERT_DIR / "key.pem"
 LOG_DIR = ROOT / "logs"
 
 HOST = os.environ.get("POSE_HOST", "0.0.0.0")
@@ -959,6 +963,12 @@ def certificate_contains_ip(cert_path: Path, lan_ip: str) -> bool:
 
 def ensure_certificate(lan_ip: str) -> None:
     """Create a development certificate whose SAN includes the current LAN IP."""
+
+    if POSE_CERT_FILE:
+        missing = [str(path) for path in (CERT_FILE, KEY_FILE) if not path.is_file()]
+        if missing:
+            raise FileNotFoundError(f"configured TLS file not found: {', '.join(missing)}")
+        return
 
     if KEY_FILE.is_file() and certificate_contains_ip(CERT_FILE, lan_ip):
         return

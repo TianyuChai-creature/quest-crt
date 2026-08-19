@@ -4,9 +4,10 @@ import asyncio
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.prepare_cloudxr_client import INJECTION_MARKER, prepare_client
-from server import app
+from server import app, ensure_certificate
 
 
 class CloudXRClientTests(unittest.TestCase):
@@ -64,6 +65,21 @@ class CloudXRClientTests(unittest.TestCase):
         headers = dict(start["headers"])
         self.assertEqual(start["status"], 200)
         self.assertEqual(headers[b"access-control-allow-origin"], b"https://192.168.8.122:48322")
+
+    def test_external_tls_files_are_reused_without_overwrite(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            cert = Path(directory) / "server.crt"
+            key = Path(directory) / "server.key"
+            cert.write_text("cloudxr-cert", encoding="utf-8")
+            key.write_text("cloudxr-key", encoding="utf-8")
+            with (
+                patch("server.POSE_CERT_FILE", str(cert)),
+                patch("server.CERT_FILE", cert),
+                patch("server.KEY_FILE", key),
+            ):
+                ensure_certificate("192.168.8.122")
+            self.assertEqual(cert.read_text(encoding="utf-8"), "cloudxr-cert")
+            self.assertEqual(key.read_text(encoding="utf-8"), "cloudxr-key")
 
 
 if __name__ == "__main__":

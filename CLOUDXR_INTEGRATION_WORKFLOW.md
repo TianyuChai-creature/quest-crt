@@ -152,4 +152,11 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
   preflight verified, JavaScript syntax passed, and all 37 Python tests passed.
 - [x] The local CloudXR service now hosts the generated client at
   `https://192.168.8.122:48322/client/`; the official cached client remains unmodified.
+- [x] H5 live unified-session evidence: Quest `192.168.8.222` simultaneously sustained
+  CloudXR render at 72.6 FPS and QCRT WebRTC ingress at roughly 72 FPS. The live 5-second QSTR
+  sample delivered 347 packets at 71.6 Hz, with 313 `ok`, 34 `held`, and 7.6 ms median capture
+  age. QCRT used unordered delivery with a 30 ms packet lifetime.
+- [x] quest-crt can reuse the already accepted CloudXR TLS certificate through
+  `POSE_CERT_FILE` and `POSE_KEY_FILE`, avoiding a second Quest Browser certificate exception.
+- [ ] H5 operator acceptance pending.
 - [ ] H5-H6 pending.
