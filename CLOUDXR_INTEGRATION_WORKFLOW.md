@@ -144,4 +144,12 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 - [x] Phase 5 live TLS/WSS regression: `/health` and coordinate API returned 200; one injected
   Pose v4 produced Viewer HTS/body output with shoulders and 21 landmarks per hand, plus a
   638-byte QSTR envelope with pose_seq 1 and 21 landmarks per hand.
+- [x] Phase 6 client preparation keeps NVIDIA's cached `bundle.js` byte-identical and injects a
+  thin QCRT exporter before it. The exporter attaches a second frame callback to the same
+  immersive `XRSession`, uses an independent WebRTC/WSS pose connection, and retains the
+  3-second no-pose preparation interval and 628-byte QCRT packet.
+- [x] Phase 6 automated checks: generated client marker/order verified, CloudXR-origin CORS
+  preflight verified, JavaScript syntax passed, and all 37 Python tests passed.
+- [x] The local CloudXR service now hosts the generated client at
+  `https://192.168.8.122:48322/client/`; the official cached client remains unmodified.
 - [ ] H5-H6 pending.

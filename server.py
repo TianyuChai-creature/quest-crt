@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from quest_crt.coordinates import (
@@ -49,6 +50,7 @@ LOG_DIR = ROOT / "logs"
 HOST = os.environ.get("POSE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("POSE_PORT", "8000"))
 OUTPUT_PORT = int(os.environ.get("OUTPUT_PORT", "8001"))
+CLOUDXR_CLIENT_PORT = int(os.environ.get("CLOUDXR_CLIENT_PORT", "48322"))
 POSE_LOG_ENABLED = os.environ.get("POSE_LOG_ENABLED", "1").strip().lower() in {
     "1",
     "true",
@@ -1028,6 +1030,12 @@ async def app_lifespan(_: FastAPI):
 
 app = FastAPI(title="Quest CRT", docs_url=None, redoc_url=None, lifespan=app_lifespan)
 viewer_app = FastAPI(title="Quest CRT Viewer", docs_url=None, redoc_url=None)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origin_regex=rf"^https://[^/:]+:{CLOUDXR_CLIENT_PORT}$",
+    allow_methods=["POST"],
+    allow_headers=["Content-Type"],
+)
 
 
 @app.get("/")

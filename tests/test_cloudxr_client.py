@@ -1,0 +1,70 @@
+from __future__ import annotations
+
+import asyncio
+import tempfile
+import unittest
+from pathlib import Path
+
+from scripts.prepare_cloudxr_client import INJECTION_MARKER, prepare_client
+from server import app
+
+
+class CloudXRClientTests(unittest.TestCase):
+    def test_prepare_injects_before_official_bundle_without_changing_source(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "official"
+            output = root / "generated"
+            source.mkdir()
+            original = '<html><head><script defer="defer" src="bundle.js"></script></head></html>'
+            (source / "index.html").write_text(original, encoding="utf-8")
+            (source / "bundle.js").write_bytes(b"official")
+            (source / "bundle.emulator.js").write_bytes(b"emulator")
+
+            prepare_client(source, output)
+
+            generated = (output / "index.html").read_text(encoding="utf-8")
+            self.assertLess(generated.index(INJECTION_MARKER), generated.index('src="bundle.js"'))
+            self.assertEqual((source / "index.html").read_text(encoding="utf-8"), original)
+
+    def test_cloudxr_origin_can_preflight_webrtc_offer(self) -> None:
+        messages: list[dict[str, object]] = []
+        request_sent = False
+
+        async def receive() -> dict[str, object]:
+            nonlocal request_sent
+            if request_sent:
+                return {"type": "http.disconnect"}
+            request_sent = True
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, object]) -> None:
+            messages.append(message)
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "OPTIONS",
+            "scheme": "https",
+            "path": "/api/webrtc/offer",
+            "raw_path": b"/api/webrtc/offer",
+            "query_string": b"",
+            "headers": [
+                (b"origin", b"https://192.168.8.122:48322"),
+                (b"access-control-request-method", b"POST"),
+                (b"access-control-request-headers", b"content-type"),
+            ],
+            "client": ("192.168.8.222", 12345),
+            "server": ("192.168.8.122", 8000),
+        }
+        asyncio.run(app(scope, receive, send))
+
+        start = next(message for message in messages if message["type"] == "http.response.start")
+        headers = dict(start["headers"])
+        self.assertEqual(start["status"], 200)
+        self.assertEqual(headers[b"access-control-allow-origin"], b"https://192.168.8.122:48322")
+
+
+if __name__ == "__main__":
+    unittest.main()
