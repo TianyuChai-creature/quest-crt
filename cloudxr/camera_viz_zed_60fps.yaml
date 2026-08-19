@@ -7,22 +7,22 @@ cameras:
     type: zed
     width: 1280
     height: 720
-    fps: 30
+    fps: 60
     bus_type: usb
     serial_number: 0
     stereo: true
 
 display:
   mode: xr
-  window:
-    width: 1280
-    height: 720
   xr:
     near_z: 0.05
     far_z: 100.0
   clear_color: [0.0, 0.0, 0.0, 0.0]
   placements:
     zed:
-      lock_mode: lazy
+      lock_mode: head
       distance: 1.0
-      stereo_baseline_mm: 50.0
+      stereo_baseline_mm: 0.0
+      shape: cylinder
+      cylinder_radius_m: 1.0
+      cylinder_angle_deg: 102.0

@@ -14,8 +14,8 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 - One immersive WebXR session must own both CloudXR rendering and QCRT capture.
 - NVIDIA upstream source is not vendored. Integrations use packages, configuration, and thin
   adapters.
-- The initial quality-oriented operating point is 1280x720 per eye at 30 FPS; higher frame rates
-  are out of scope unless later operator feedback requests them.
+- The selected operating point is 1280x720 per eye at 60 FPS with native ZED disparity on a
+  head-locked 102-degree presentation cylinder. Rejected 30 FPS profiles are not shipped.
 
 ## Evidence policy
 
@@ -107,10 +107,8 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
   OpenCV, and pyzed 5.4 installed in the temporary reference checkout.
 - [x] Phase 2 automated desktop smoke: synthetic ~58 FPS, replay 30 FPS, and ZED direct
   ~69 FPS steady-state, all with zero missed renders.
-- [x] Operator selected a 30 FPS quality-oriented target; repository config added for
-  1280x720-per-eye direct ZED capture.
-- [x] Selected target verified: SDK current 29.9-30.0 FPS, measured capture 30.0 FPS,
-  Televiz window render 32-38 FPS, and zero missed renders after warm-up.
+- [x] A 1280x720-per-eye 30 FPS candidate was verified at 29.9-30.0 FPS with zero missed
+  renders, then rejected during H4 because its motion sampling caused visible judder.
 - [x] H2 Televiz desktop acceptance passed by the user at the 30 FPS operating point.
 - [x] User accepted the NVIDIA CloudXR EULA; CloudXR Runtime 6.3.0, Quest3 profile,
   WSS proxy, and locally hosted Web Client are running.
@@ -121,4 +119,26 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 - [x] H3 visual gate repeated with explicit LEFT EYE / RIGHT EYE content after the upstream
   disparity-only pattern proved ambiguous to the operator.
 - [x] H3 synthetic stereo operator acceptance passed.
-- [ ] H3-H6 pending.
+- [x] H4 automated ZED stream: 30.0 FPS capture, 72.3-72.7 FPS Quest render, zero missed
+  frames, ~6 ms GPU-end-to-encode-end, 39% encoder utilization, and ~2.6 GiB total GPU memory.
+- [x] H4 initial quad was rejected: extra stereo baseline caused discomfort, the world/lazy quad
+  looked like a cinema screen, and the camera image was too dark.
+- [x] H4 geometry retest used native ZED disparity only (`stereo_baseline_mm: 0`) on a
+  head-locked 102-degree presentation cylinder. Brightness was accepted without adjustment.
+- [x] H4 geometry feedback: cylinder fills the view better, native disparity is preferred, and
+  brightness is acceptable. Stable 30 FPS capture still has visible motion judder at 72 Hz.
+- [x] H4 frame-rate A/B automated 60 FPS result: 60.0 FPS capture, ~72 FPS Quest render,
+  zero missed frames, ~6.25 ms GPU-end-to-encode-end, 39% encoder utilization, and ~2.65 GiB
+  total GPU memory.
+- [x] H4 operator comparison selected 60 FPS: motion judder improved while clarity, color,
+  native stereo fusion, brightness, and 102-degree cylinder presentation remained acceptable.
+- [x] H4 ZED quality/latency operator acceptance passed for 720p60.
+- [x] H4 reopened for user-requested 1080p30 comparison. Hardware calibration reports rectified
+  FOV 65.3x39.6 degrees at HD1080, versus 82.7x52.7 degrees at HD720; the first 1080p test uses
+  the calibrated 65.3-degree cylinder instead of stretching it to the prior presentation angle.
+- [x] H4 1080p30 automated result: 29.9 FPS capture, ~72 FPS Quest render, zero missed frames,
+  ~6.2 ms GPU-end-to-encode-end, 28% encoder utilization, and ~3.02 GiB total GPU memory.
+- [x] H4 operator rejected 1080p30: detail improvement was not substantial, 30 FPS motion caused
+  dizziness, and sustained Quest render later fell to roughly 52-57 FPS. Final selection: 720p60.
+- [x] H4 final acceptance passed.
+- [ ] H5-H6 pending.
