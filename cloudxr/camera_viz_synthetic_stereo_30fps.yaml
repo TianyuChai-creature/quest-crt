@@ -1,0 +1,25 @@
+verbose: true
+source: local
+
+cameras:
+  - name: synth
+    enabled: true
+    type: synthetic
+    stereo: true
+    width: 1280
+    height: 720
+    fps: 30
+    hue_speed_hz: 0.25
+    disparity_px: 20
+
+display:
+  mode: xr
+  xr:
+    near_z: 0.05
+    far_z: 100.0
+  clear_color: [0.05, 0.05, 0.08, 1.0]
+  placements:
+    synth:
+      lock_mode: lazy
+      distance: 1.0
+      stereo_baseline_mm: 0.0

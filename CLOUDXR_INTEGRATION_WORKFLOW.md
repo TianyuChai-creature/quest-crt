@@ -20,6 +20,8 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 ## Evidence policy
 
 - Automated checks must leave a command or machine-readable report.
+- Stereo manual gates must use eye-specific labels or markers; disparity-only animation is not
+  sufficient evidence that each eye receives the correct view.
 - Hardware evidence is written to `/tmp/quest-crt-zed-check` unless explicitly requested
   otherwise.
 - Manual gates H1-H6 stop the goal until the user returns `PASS` or actionable feedback.
@@ -110,4 +112,13 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 - [x] Selected target verified: SDK current 29.9-30.0 FPS, measured capture 30.0 FPS,
   Televiz window render 32-38 FPS, and zero missed renders after warm-up.
 - [x] H2 Televiz desktop acceptance passed by the user at the 30 FPS operating point.
+- [x] User accepted the NVIDIA CloudXR EULA; CloudXR Runtime 6.3.0, Quest3 profile,
+  WSS proxy, and locally hosted Web Client are running.
+- [x] H3 synthetic stereo config added at 1280x720 per eye and 30 FPS.
+- [x] Quest client connected from `192.168.8.222`; WSS signaling and UDP media are active.
+- [x] H3 transport smoke: OpenXR system/session and Vulkan device created, synthetic source
+  28-30 FPS, Quest render 65-72 FPS, zero missed frames, and ~6 ms GPU-end-to-encode-end.
+- [x] H3 visual gate repeated with explicit LEFT EYE / RIGHT EYE content after the upstream
+  disparity-only pattern proved ambiguous to the operator.
+- [x] H3 synthetic stereo operator acceptance passed.
 - [ ] H3-H6 pending.
