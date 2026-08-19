@@ -124,7 +124,8 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 默认入口 `https://<PC-IP>:8000/` 立即提供姿态-only；视频开关默认关闭。启动器无限等待
 可选视频连接，正整数 `QUEST_WAIT_SECONDS` 可设置超时；视频进程退出不会带停姿态服务。
 CloudXR 页面默认显示与 main 主线一致的 Quest CRT 简洁入口；NVIDIA 原始表单通过
-“高级设置”进入，不参与日常操作。
+“高级设置”进入，不参与日常操作。勾选视频会立即切换到视频准备页；由于 WebXR 要求
+目标页面上的用户手势，操作者在该页只点击一次“开始准备”即可进入 XR。
 
 CloudXR Runtime/CloudXR.js、IsaacTeleop/Televiz 与 ZED SDK/pyzed 均须单独安装并遵守
 各自上游许可；本仓不分发这些组件。NVIDIA CloudXR EULA 必须由使用者明确接受，

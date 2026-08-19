@@ -221,7 +221,7 @@
         <label class="mode video-mode" for="video-mode">
           <div>
             <strong>视频回传</strong>
-            <small>ZED Mini · 720p60 · CloudXR</small>
+            <small>ZED Mini · 720p60 · 开启后进入视频准备页</small>
           </div>
           <input id="video-mode" type="checkbox" />
           <span class="switch" aria-hidden="true"></span>
@@ -363,9 +363,7 @@
             enterButton.textContent = "等待PC连接"
             setSessionPhase("idle")
           } else {
-            enterButton.textContent = videoMode.checked
-              ? "进入视频 + 姿态模式"
-              : "开始准备"
+            enterButton.textContent = "开始准备"
             setSessionPhase("ready")
           }
         }
@@ -1322,14 +1320,20 @@
         }
       }
 
-      videoMode.addEventListener("change", () => setConnectionStatus(transportStatus.textContent))
-      enterButton.addEventListener("click", () => {
+      videoMode.addEventListener("change", () => {
         if (videoMode.checked) {
-          location.href = `${location.protocol}//${location.hostname}:48322/client/`
-          return
+          const videoUrl = new URL(
+            `${location.protocol}//${location.hostname}:48322/client/`
+          )
+          videoUrl.searchParams.set("panelHiddenAtStart", "true")
+          videoUrl.searchParams.set("controllerModelVisibility", "hide")
+          videoUrl.searchParams.set("showTraceInXR", "false")
+          videoUrl.searchParams.set("showRecordingControls", "false")
+          videoUrl.searchParams.set("autoRefreshMode", "never")
+          location.href = videoUrl
         }
-        enterXR()
       })
+      enterButton.addEventListener("click", enterXR)
       connectTransport()
     </script>
   </body>

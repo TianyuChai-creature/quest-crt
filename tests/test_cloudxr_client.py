@@ -28,6 +28,7 @@ class CloudXRClientTests(unittest.TestCase):
             self.assertLess(generated.index(INJECTION_MARKER), generated.index('src="bundle.js"'))
             self.assertIn("qcrt-entry", generated)
             self.assertIn("qcrt-video-toggle", generated)
+            self.assertIn('panelHiddenAtStart: "true"', generated)
             self.assertEqual((source / "index.html").read_text(encoding="utf-8"), original)
 
     def test_pose_entry_makes_video_optional(self) -> None:
@@ -36,6 +37,7 @@ class CloudXRClientTests(unittest.TestCase):
         )
         self.assertIn('<input id="video-mode" type="checkbox" />', index)
         self.assertIn(":48322/client/", index)
+        self.assertIn('enterButton.addEventListener("click", enterXR)', index)
 
     def test_cloudxr_origin_can_preflight_webrtc_offer(self) -> None:
         messages: list[dict[str, object]] = []

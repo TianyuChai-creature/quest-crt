@@ -3,6 +3,24 @@
 
   const params = new URLSearchParams(location.search)
   if (params.get("qcrt") === "off" || !navigator.xr) return
+  const PRODUCT_DEFAULTS = {
+    panelHiddenAtStart: "true",
+    controllerModelVisibility: "hide",
+    showTraceInXR: "false",
+    showRecordingControls: "false",
+    autoRefreshMode: "never",
+  }
+  if (params.get("qcrtUi") !== "nvidia") {
+    const productUrl = new URL(location.href)
+    let changed = false
+    for (const [key, value] of Object.entries(PRODUCT_DEFAULTS)) {
+      if (params.has(key)) continue
+      params.set(key, value)
+      productUrl.searchParams.set(key, value)
+      changed = true
+    }
+    if (changed) history.replaceState(null, "", productUrl)
+  }
 
   const HAND_JOINTS = [
     "wrist",
@@ -419,6 +437,7 @@
     document.querySelector("#qcrt-advanced").addEventListener("click", () => {
       const next = new URL(location.href)
       next.searchParams.set("qcrtUi", "nvidia")
+      for (const key of Object.keys(PRODUCT_DEFAULTS)) next.searchParams.delete(key)
       location.href = next
     })
     if (officialRoot) {

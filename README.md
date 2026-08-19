@@ -90,7 +90,8 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 高级设置保留。`Ctrl+C` 停止 camera_viz 和 quest-crt；CloudXR 后台服务保留，可用
 `python -m isaacteleop.cloudxr.service stop` 单独停止。
 产品默认入口是 `https://<PC-IP>:8000/`：姿态始终开启，视频回传开关默认关闭。
-开启视频后页面转入同风格的 CloudXR 入口；关闭视频则返回姿态-only。启动器默认无限
+勾选视频时页面立即转入同风格的 CloudXR 准备页，随后只需点击一次“开始准备”；关闭
+视频则返回姿态-only。启动器默认无限
 等待这条可选视频连接，同时姿态服务立即可用；可用正整数 `QUEST_WAIT_SECONDS` 设置
 视频等待超时。camera_viz 退出时 quest-crt 继续运行。
 

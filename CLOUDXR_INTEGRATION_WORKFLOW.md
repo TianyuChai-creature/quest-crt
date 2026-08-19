@@ -186,4 +186,6 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
   with NVIDIA's original page retained as advanced settings. The launcher keeps pose alive when
   video is absent or camera_viz exits.
 - [x] Optional-video entry checks and the full suite passed (39 tests total).
-- [ ] Post-H6 HMI operator acceptance pending.
+- [x] Post-H6 HMI operator acceptance passed: the NVIDIA panel is hidden in normal operation,
+  checking video immediately switches to the video preparation page, and one subsequent
+  `Start` action enters XR. Pose remains the primary feature and video remains optional.
