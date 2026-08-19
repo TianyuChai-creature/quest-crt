@@ -45,6 +45,7 @@
     lastError: null,
   })
   let badge = null
+  let shellValues = null
   let activeSession = null
   let referenceSpace = null
   let sessionId = null
@@ -57,9 +58,24 @@
   let connectionAttempt = 0
 
   function renderStatus() {
-    if (!badge) return
-    badge.textContent = `QCRT ${state.phase} | ${state.transport} | ${state.sent}`
-    badge.style.background = state.lastError ? "#8b1d1d" : "#173b20"
+    if (badge) {
+      badge.textContent = `QCRT ${state.phase} | ${state.transport} | ${state.sent}`
+      badge.style.background = state.lastError ? "#8b1d1d" : "#173b20"
+    }
+    if (!shellValues) return
+    const phases = {
+      "waiting-xr": "待进入 XR",
+      preparing: "准备中",
+      streaming: "传输中",
+      "waiting-body": "等待人体追踪",
+      ended: "已结束",
+      error: "异常",
+    }
+    shellValues.phase.textContent = phases[state.phase] || state.phase
+    shellValues.transport.textContent = state.transport
+    shellValues.sent.textContent = state.sent.toLocaleString()
+    shellValues.dropped.textContent = state.dropped.toLocaleString()
+    shellValues.poseDot.dataset.state = state.lastError ? "error" : state.phase
   }
 
   function setState(values) {
@@ -72,7 +88,7 @@
     if (changed) renderStatus()
   }
 
-  function mountBadge() {
+  function mountAdvancedBadge() {
     badge = document.createElement("div")
     badge.id = "qcrt-status"
     Object.assign(badge.style, {
@@ -87,12 +103,344 @@
       pointerEvents: "none",
     })
     document.body.appendChild(badge)
+
+    const back = document.createElement("button")
+    back.type = "button"
+    back.textContent = "返回 Quest CRT 入口"
+    Object.assign(back.style, {
+      position: "fixed",
+      left: "12px",
+      bottom: "12px",
+      zIndex: "2147483647",
+      padding: "9px 12px",
+      border: "1px solid #4f7cff",
+      borderRadius: "6px",
+      background: "#101114",
+      color: "white",
+      font: "600 12px system-ui",
+      cursor: "pointer",
+    })
+    back.addEventListener("click", () => {
+      const next = new URL(location.href)
+      next.searchParams.delete("qcrtUi")
+      location.href = next
+    })
+    document.body.appendChild(back)
     renderStatus()
   }
+
+  function mountShell() {
+    document.title = "Quest CRT · ZED Teleop"
+    document.documentElement.lang = "zh-CN"
+    document.body.classList.add("qcrt-shell")
+
+    const style = document.createElement("style")
+    style.textContent = `
+      body.qcrt-shell {
+        margin: 0 !important;
+        padding: 0 !important;
+        overflow: hidden !important;
+        color: #f4f4f5;
+        background: #0d0f14 !important;
+      }
+      body.qcrt-shell [id="2d-ui"] { display: none !important; }
+      body.xr-mode #qcrt-entry { display: none !important; }
+      #qcrt-entry {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483000;
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+        padding: max(24px, env(safe-area-inset-top)) max(24px, env(safe-area-inset-right))
+          max(24px, env(safe-area-inset-bottom)) max(24px, env(safe-area-inset-left));
+        overflow: auto;
+        background:
+          linear-gradient(#ffffff08 1px, transparent 1px),
+          linear-gradient(90deg, #ffffff08 1px, transparent 1px),
+          radial-gradient(circle at 50% -10%, #294475 0, transparent 43%),
+          #0d0f14;
+        background-size: 36px 36px, 36px 36px, auto, auto;
+        font-family: "Avenir Next", "Noto Sans SC", ui-sans-serif, system-ui, sans-serif;
+      }
+      #qcrt-entry * { box-sizing: border-box; }
+      #qcrt-entry .qcrt-panel {
+        position: relative;
+        width: min(92vw, 560px);
+        padding: 30px;
+        overflow: hidden;
+        border: 1px solid #ffffff20;
+        border-radius: 20px;
+        background: #17191ee8;
+        box-shadow: 0 28px 100px #000a, inset 0 1px #ffffff0d;
+        animation: qcrt-arrive 360ms ease-out both;
+      }
+      #qcrt-entry .qcrt-panel::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 30px;
+        width: 96px;
+        height: 3px;
+        background: #4f7cff;
+        box-shadow: 0 0 24px #4f7cffaa;
+      }
+      #qcrt-entry .qcrt-kicker {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 10px;
+        color: #9db2f8;
+        font-size: 11px;
+        font-weight: 750;
+        letter-spacing: .16em;
+        text-transform: uppercase;
+      }
+      #qcrt-entry .qcrt-mark {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: #86efac;
+        box-shadow: 0 0 14px #86efacaa;
+      }
+      #qcrt-entry h1 {
+        margin: 0 0 10px;
+        color: #fafafa;
+        font-size: clamp(27px, 5vw, 34px);
+        font-weight: 720;
+        letter-spacing: -.035em;
+      }
+      #qcrt-entry .qcrt-lede {
+        margin: 0;
+        color: #a1a1aa;
+        font-size: 14px;
+        line-height: 1.65;
+      }
+      #qcrt-entry .qcrt-modes {
+        display: grid;
+        gap: 10px;
+        margin: 22px 0 4px;
+      }
+      #qcrt-entry .qcrt-mode {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 18px;
+        min-height: 72px;
+        padding: 14px 16px;
+        border: 1px solid #ffffff17;
+        border-radius: 14px;
+        background: #ffffff08;
+      }
+      #qcrt-entry .qcrt-mode strong,
+      #qcrt-entry .qcrt-mode small { display: block; }
+      #qcrt-entry .qcrt-mode strong {
+        margin-bottom: 4px;
+        color: #f4f4f5;
+        font-size: 15px;
+      }
+      #qcrt-entry .qcrt-mode small { color: #858894; font-size: 12px; line-height: 1.4; }
+      #qcrt-entry .qcrt-primary-tag {
+        flex: none;
+        padding: 5px 8px;
+        border-radius: 999px;
+        background: #4f7cff20;
+        color: #b2c2ff;
+        font-size: 11px;
+        font-weight: 700;
+      }
+      #qcrt-entry .qcrt-video { cursor: pointer; }
+      #qcrt-entry .qcrt-video:focus-within {
+        border-color: #4f7cffaa;
+        box-shadow: 0 0 0 3px #4f7cff24;
+      }
+      #qcrt-entry .qcrt-video input { position: absolute; opacity: 0; pointer-events: none; }
+      #qcrt-entry .qcrt-switch {
+        position: relative;
+        flex: none;
+        width: 48px;
+        height: 28px;
+        border-radius: 999px;
+        background: #4f7cff;
+      }
+      #qcrt-entry .qcrt-switch::after {
+        content: "";
+        position: absolute;
+        top: 4px;
+        left: 24px;
+        width: 20px;
+        height: 20px;
+        border-radius: 50%;
+        background: white;
+        box-shadow: 0 2px 8px #0008;
+      }
+      #qcrt-entry .qcrt-start {
+        width: 100%;
+        min-height: 54px;
+        margin: 18px 0 0;
+        padding: 14px 18px;
+        border: 0;
+        border-radius: 12px;
+        background: #4f7cff;
+        color: white;
+        font: inherit;
+        font-size: 15px;
+        font-weight: 720;
+        letter-spacing: .01em;
+        cursor: pointer;
+        box-shadow: 0 12px 34px #355ac64d;
+        transition: transform 140ms ease, background 140ms ease;
+      }
+      #qcrt-entry .qcrt-start:hover:not(:disabled) { transform: translateY(-1px); background: #638bff; }
+      #qcrt-entry .qcrt-start:focus-visible { outline: 3px solid #9db2f866; outline-offset: 3px; }
+      #qcrt-entry .qcrt-start:disabled { cursor: wait; opacity: .48; box-shadow: none; }
+      #qcrt-entry .qcrt-hint {
+        margin: 12px 0 0;
+        padding: 11px 13px;
+        border: 1px solid #fbbf2433;
+        border-radius: 11px;
+        background: #fbbf2413;
+        color: #f5d988;
+        font-size: 12px;
+        line-height: 1.55;
+      }
+      #qcrt-entry .qcrt-status {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 1px;
+        margin: 16px 0 0;
+        overflow: hidden;
+        border: 1px solid #ffffff12;
+        border-radius: 12px;
+        background: #ffffff12;
+      }
+      #qcrt-entry .qcrt-stat { padding: 11px 13px; background: #111318; }
+      #qcrt-entry .qcrt-stat span { display: block; color: #747782; font-size: 10px; letter-spacing: .08em; }
+      #qcrt-entry .qcrt-stat strong { display: block; margin-top: 4px; color: #b9f6ca; font: 600 12px ui-monospace, monospace; }
+      #qcrt-entry .qcrt-error {
+        margin: 12px 0 0;
+        color: #fca5a5;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      #qcrt-entry .qcrt-advanced {
+        display: block;
+        width: auto;
+        min-height: 0;
+        margin: 16px auto 0;
+        padding: 4px;
+        border: 0;
+        background: transparent;
+        color: #777b87;
+        font: 600 11px inherit;
+        letter-spacing: .03em;
+        text-transform: none;
+        cursor: pointer;
+      }
+      #qcrt-entry .qcrt-advanced:hover { color: #b7bac4; background: transparent; }
+      @keyframes qcrt-arrive { from { opacity: 0; transform: translateY(10px) scale(.99); } }
+      @media (max-height: 720px) {
+        #qcrt-entry { place-items: start center; }
+        #qcrt-entry .qcrt-panel { padding: 24px; }
+        #qcrt-entry .qcrt-mode { min-height: 62px; }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        #qcrt-entry .qcrt-panel { animation: none; }
+        #qcrt-entry .qcrt-start { transition: none; }
+      }
+    `
+    document.head.appendChild(style)
+
+    const shell = document.createElement("main")
+    shell.id = "qcrt-entry"
+    shell.innerHTML = `
+      <section class="qcrt-panel" aria-labelledby="qcrt-title">
+        <div class="qcrt-kicker"><span class="qcrt-mark"></span>Quest CRT · Operator link</div>
+        <h1 id="qcrt-title">人体姿态采集</h1>
+        <p class="qcrt-lede">双手、肩与肘的低延迟传输始终开启；当前额外启用 ZED 现场视频。</p>
+        <div class="qcrt-modes">
+          <div class="qcrt-mode">
+            <div><strong>人体姿态传输</strong><small>QCRT · WebRTC 优先 · 72 Hz</small></div>
+            <span class="qcrt-primary-tag">主功能</span>
+          </div>
+          <label class="qcrt-mode qcrt-video" for="qcrt-video-toggle">
+            <div><strong>视频回传</strong><small>ZED Mini · 720p60 · CloudXR</small></div>
+            <input id="qcrt-video-toggle" type="checkbox" checked />
+            <span class="qcrt-switch" aria-hidden="true"></span>
+          </label>
+        </div>
+        <button class="qcrt-start" id="qcrt-start" type="button" disabled>正在检查视频链路…</button>
+        <p class="qcrt-hint">进入 XR 后留出 3 秒摆姿时间，随后自动开始人体数据传输，无需第二次点击。</p>
+        <div class="qcrt-status" role="status" aria-live="polite">
+          <div class="qcrt-stat"><span>VIDEO</span><strong id="qcrt-cloudxr-value">checking</strong></div>
+          <div class="qcrt-stat"><span>POSE SESSION</span><strong id="qcrt-phase-value">待进入 XR</strong></div>
+          <div class="qcrt-stat"><span>POSE LINK</span><strong id="qcrt-transport-value">closed</strong></div>
+          <div class="qcrt-stat"><span>SENT / DROPPED</span><strong><b id="qcrt-sent-value">0</b> / <b id="qcrt-dropped-value">0</b></strong></div>
+        </div>
+        <p class="qcrt-error" id="qcrt-shell-error" hidden></p>
+        <button class="qcrt-advanced" id="qcrt-advanced" type="button">NVIDIA CloudXR 高级设置 →</button>
+      </section>
+    `
+    document.body.appendChild(shell)
+
+    shellValues = {
+      phase: document.querySelector("#qcrt-phase-value"),
+      transport: document.querySelector("#qcrt-transport-value"),
+      sent: document.querySelector("#qcrt-sent-value"),
+      dropped: document.querySelector("#qcrt-dropped-value"),
+      poseDot: document.querySelector(".qcrt-mark"),
+    }
+    const start = document.querySelector("#qcrt-start")
+    const cloudxrValue = document.querySelector("#qcrt-cloudxr-value")
+    const shellError = document.querySelector("#qcrt-shell-error")
+    const officialStart = document.querySelector("#startButton")
+    const officialRoot = document.getElementById("2d-ui")
+
+    function syncCloudXR() {
+      const ready = officialStart && !officialStart.disabled
+      start.disabled = !ready
+      start.textContent = ready ? "开始准备" : "正在检查视频链路…"
+      cloudxrValue.textContent = ready ? "ready" : "checking"
+      const error = document.querySelector("#errorMessageText")?.textContent?.trim()
+      const validation = document.querySelector("#validationMessageText")?.textContent?.trim()
+      shellError.textContent = error || validation || ""
+      shellError.hidden = !shellError.textContent
+    }
+
+    start.addEventListener("click", () => {
+      if (!officialStart || officialStart.disabled) return
+      start.disabled = true
+      start.textContent = "正在进入 XR…"
+      officialStart.click()
+    })
+    document.querySelector("#qcrt-video-toggle").addEventListener("change", () => {
+      location.href = `${location.protocol}//${location.hostname}:8000/`
+    })
+    document.querySelector("#qcrt-advanced").addEventListener("click", () => {
+      const next = new URL(location.href)
+      next.searchParams.set("qcrtUi", "nvidia")
+      location.href = next
+    })
+    if (officialRoot) {
+      new MutationObserver(syncCloudXR).observe(officialRoot, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+        characterData: true,
+      })
+    }
+    syncCloudXR()
+    renderStatus()
+  }
+
+  function mountInterface() {
+    if (params.get("qcrtUi") === "nvidia") mountAdvancedBadge()
+    else mountShell()
+  }
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", mountBadge, { once: true })
+    document.addEventListener("DOMContentLoaded", mountInterface, { once: true })
   } else {
-    mountBadge()
+    mountInterface()
   }
 
   function transportIsOpen() {

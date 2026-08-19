@@ -120,8 +120,11 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 姿态 JSONL 以减少实时链路 I/O；需要记录时设置 `POSE_LOG_ENABLED=1`。可通过
 `CAMERA_CONFIG` 覆盖相机配置，但验收基线是
 `cloudxr/camera_viz_zed_60fps.yaml`。启动器会先等待 Quest 在 TCP 48322 建立连接，
-再创建 camera_viz OpenXR 应用，避免干净启动时 `XR_ERROR_FORM_FACTOR_UNAVAILABLE`；
-默认等待 300 秒，可用 `QUEST_WAIT_SECONDS` 调整。
+再创建 camera_viz OpenXR 应用，避免干净启动时 `XR_ERROR_FORM_FACTOR_UNAVAILABLE`。
+默认入口 `https://<PC-IP>:8000/` 立即提供姿态-only；视频开关默认关闭。启动器无限等待
+可选视频连接，正整数 `QUEST_WAIT_SECONDS` 可设置超时；视频进程退出不会带停姿态服务。
+CloudXR 页面默认显示与 main 主线一致的 Quest CRT 简洁入口；NVIDIA 原始表单通过
+“高级设置”进入，不参与日常操作。
 
 CloudXR Runtime/CloudXR.js、IsaacTeleop/Televiz 与 ZED SDK/pyzed 均须单独安装并遵守
 各自上游许可；本仓不分发这些组件。NVIDIA CloudXR EULA 必须由使用者明确接受，

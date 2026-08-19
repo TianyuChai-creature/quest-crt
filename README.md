@@ -84,12 +84,15 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 ```
 
 启动器生成一个不纳入 Git 的 `.cloudxr-client/`：仅复制已安装的 NVIDIA Web Client
-三文件，并在官方 `bundle.js` 前注入 QCRT exporter；官方缓存和 bundle 保持不变。Quest
-打开 `https://<PC-IP>:48322/client/` 后只需一次 `CONNECT`，同一个 WebXR 会话承载
-CloudXR 视频与 QCRT 人体数据。`Ctrl+C` 停止 camera_viz 和 quest-crt；CloudXR 后台服务
-保留，可用 `python -m isaacteleop.cloudxr.service stop` 单独停止。
-启动器默认等待 Quest 连接最多 300 秒，再创建 OpenXR 应用；可通过
-`QUEST_WAIT_SECONDS` 调整。
+三文件，并在官方 `bundle.js` 前注入 QCRT exporter；官方缓存和 bundle 保持不变。
+视频模式内部使用 `https://<PC-IP>:48322/client/`，但操作者仍从 `:8000` 的 Quest CRT
+入口切换；同一个 WebXR 会话承载 CloudXR 视频与 QCRT 人体数据。NVIDIA 原界面仅作为
+高级设置保留。`Ctrl+C` 停止 camera_viz 和 quest-crt；CloudXR 后台服务保留，可用
+`python -m isaacteleop.cloudxr.service stop` 单独停止。
+产品默认入口是 `https://<PC-IP>:8000/`：姿态始终开启，视频回传开关默认关闭。
+开启视频后页面转入同风格的 CloudXR 入口；关闭视频则返回姿态-only。启动器默认无限
+等待这条可选视频连接，同时姿态服务立即可用；可用正整数 `QUEST_WAIT_SECONDS` 设置
+视频等待超时。camera_viz 退出时 quest-crt 继续运行。
 
 该模式要求使用者分别接受 NVIDIA CloudXR EULA、Stereolabs ZED SDK 条款及
 IsaacTeleop/Televiz 上游许可。本仓不分发这些组件，只保存配置和薄适配器。传统

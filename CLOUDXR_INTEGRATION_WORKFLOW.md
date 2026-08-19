@@ -180,4 +180,10 @@ path with ZED Mini -> Televiz -> CloudXR Runtime -> CloudXR.js.
 - [x] Final launcher-session checks: 346 QSTR packets in 5 seconds at 71.6 Hz with 6.7 ms
   median capture age; live `/ws` and `/ws/stream` contracts passed again. All 38 unit tests
   passed, including the local QSTR UDP test.
-- [ ] H6 pending.
+- [x] H6 transport, recovery, and operator experience acceptance passed.
+- [x] Post-H6 product entry now keeps pose as the primary always-on capability and makes ZED
+  video optional. Port 8000 is the default Quest CRT entry; the CloudXR page uses the same HMI,
+  with NVIDIA's original page retained as advanced settings. The launcher keeps pose alive when
+  video is absent or camera_viz exits.
+- [x] Optional-video entry checks and the full suite passed (39 tests total).
+- [ ] Post-H6 HMI operator acceptance pending.
