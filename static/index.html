@@ -108,14 +108,14 @@
     <main>
       <h1>Quest Hand + Arm Pose</h1>
       <p>
-        读取双手各21个关键点以及左右肩、肘位置，转换为上背部人体坐标后通过低延迟WebRTC发送到PC。
-        为避免接通瞬间姿态差过大：点「开始准备」后先倒计时 3 秒再自动传数（摆姿时无需再点击）。
+        Reads 21 landmarks per hand plus left/right shoulders and elbows, converts them to the upper-back body frame, and sends them to the PC over low-latency WebRTC.
+        To avoid a large pose jump at connect: tap Start prep, then a 3-second countdown runs before streaming (no extra taps while you pose).
       </p>
 
-      <button id="enter-xr" disabled>等待PC连接</button>
+      <button id="enter-xr" disabled>Waiting for PC</button>
       <p class="hint" id="prep-hint">
-        点击后仅需<strong>一次</strong>操作：进入 XR 后将有 <strong>3 秒</strong>倒计时，
-        请用双手摆成与机械臂相近的姿势。<strong>摆姿期间不要再点击</strong>；倒计时结束自动开始向 PC 传输。
+        One tap only: after you enter XR there is a <strong>3-second</strong> countdown.
+        Hold a pose close to the robot arms. <strong>Do not tap the UI during the countdown</strong>; streaming to the PC starts automatically when it ends.
       </p>
 
       <div class="status">
@@ -200,8 +200,8 @@
       const WS_MAX_BUFFERED_BYTES = 16 * 1024
       /** Scheme A: single click → XR → countdown (no pose) → auto stream. No second click. */
       const PREP_COUNTDOWN_S = 3
-      const PREP_HINT_ZH =
-        "请摆成与机械臂相近的姿势\n双手不要再点击界面"
+      const PREP_HINT =
+        "Hold a pose close to the robot arms\nDo not tap the UI"
       const enterButton = document.querySelector("#enter-xr")
       const transportStatus = document.querySelector("#transport-status")
       const sessionPhaseEl = document.querySelector("#session-phase")
@@ -243,10 +243,10 @@
         enterButton.disabled = !open || xrSession !== null
         if (!xrSession) {
           if (!open) {
-            enterButton.textContent = "等待PC连接"
+            enterButton.textContent = "Waiting for PC"
             setSessionPhase("idle")
           } else {
-            enterButton.textContent = "开始准备"
+            enterButton.textContent = "Start prep"
             setSessionPhase("ready")
           }
         }
@@ -1030,7 +1030,7 @@
             xrStatus.textContent = "ended"
             setSessionPhase(transportIsOpen() ? "ready" : "idle")
             enterButton.disabled = !transportIsOpen()
-            enterButton.textContent = transportIsOpen() ? "重新准备" : "等待PC连接"
+            enterButton.textContent = transportIsOpen() ? "Prep again" : "Waiting for PC"
             if (prepHintEl) prepHintEl.classList.remove("hidden")
           })
 
@@ -1108,7 +1108,7 @@
               leftShoulder,
               rightShoulder,
               inPrep
-                ? { show: true, countdown: countdownSec, hint: PREP_HINT_ZH }
+                ? { show: true, countdown: countdownSec, hint: PREP_HINT }
                 : { show: false }
             )
 
@@ -1118,7 +1118,7 @@
                 lastUiUpdate = timestamp
                 sentCount.textContent = String(sent)
                 dropCount.textContent = String(dropped)
-                xrStatus.textContent = inPrep ? `准备中 ${countdownSec}s` : "starting"
+                xrStatus.textContent = inPrep ? `Prep ${countdownSec}s` : "starting"
               }
               return
             }
@@ -1198,7 +1198,7 @@
           xrStatus.textContent = `error: ${error instanceof Error ? error.message : error}`
           setSessionPhase(transportIsOpen() ? "ready" : "idle")
           enterButton.disabled = !transportIsOpen()
-          enterButton.textContent = transportIsOpen() ? "开始准备" : "等待PC连接"
+          enterButton.textContent = transportIsOpen() ? "Start prep" : "Waiting for PC"
           if (prepHintEl) prepHintEl.classList.remove("hidden")
         }
       }
