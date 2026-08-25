@@ -21,10 +21,14 @@ KEY="$CLOUDXR_HOME/certs/server.key"
 for path in "$QCRT_PY" "$CLOUDXR_PY" "$CAMERA_VIZ" "$CAMERA_CONFIG" "$CERT" "$KEY"; do
   [[ -e "$path" ]] || { echo "Missing required path: $path" >&2; exit 2; }
 done
-command -v ss >/dev/null || { echo "Missing required command: ss" >&2; exit 2; }
 [[ "$QUEST_WAIT_SECONDS" =~ ^[0-9]+$ ]] || {
   echo "QUEST_WAIT_SECONDS must be a non-negative integer." >&2
   exit 2
+}
+
+cloudxr_signin_count() {
+  grep -hF "/sign_in?peer_id=" "$CLOUDXR_HOME"/logs/wss*.log 2>/dev/null \
+    | grep -c "Proxying " || true
 }
 
 "$QCRT_PY" "$ROOT/scripts/prepare_cloudxr_client.py" >/dev/null
@@ -43,6 +47,7 @@ if [[ $# -ne 0 ]]; then
   exit 2
 fi
 
+signins_before="$(cloudxr_signin_count)"
 "$CLOUDXR_PY" -m isaacteleop.cloudxr.service stop >/dev/null 2>&1 || true
 TELEOP_WEB_CLIENT_STATIC_DIR="$ROOT/.cloudxr-client" \
   "$CLOUDXR_PY" -m isaacteleop.cloudxr.service start --host-client
@@ -66,7 +71,7 @@ echo "Primary entry: https://<PC-LAN-IP>:8000/ (pose is always available)."
 echo "Enable video there to open CloudXR; waiting for that optional connection..."
 quest_connected=false
 for ((second = 0; ; second += 1)); do
-  if ss -Htn state established '( sport = :48322 )' | grep -q .; then
+  if (( $(cloudxr_signin_count) > signins_before )); then
     quest_connected=true
     break
   fi

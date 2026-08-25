@@ -17,6 +17,7 @@ INJECTION_MARKER = "QCRT_CLOUDXR_INJECTED"
 BUNDLE_TAG = re.compile(
     r"<script\b(?=[^>]*\bsrc=[\"']bundle\.js[\"'])[^>]*></script>", re.IGNORECASE
 )
+REQUIRED_DOM_IDS = ("2d-ui", "startButton")
 
 
 def prepare_client(source: Path, output: Path) -> Path:
@@ -36,6 +37,15 @@ def prepare_client(source: Path, output: Path) -> Path:
         raise ValueError("source index already contains the QCRT injection")
     if "</script" in exporter.lower():
         raise ValueError("exporter cannot be embedded safely")
+    missing_ids = [
+        element_id
+        for element_id in REQUIRED_DOM_IDS
+        if re.search(rf"\bid=[\"']{re.escape(element_id)}[\"']", index) is None
+    ]
+    if missing_ids:
+        raise ValueError(
+            f"unsupported CloudXR client; missing DOM IDs: {', '.join(missing_ids)}"
+        )
 
     match = BUNDLE_TAG.search(index)
     if match is None:

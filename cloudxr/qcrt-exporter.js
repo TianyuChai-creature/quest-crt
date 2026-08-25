@@ -3,6 +3,9 @@
 
   const params = new URLSearchParams(location.search)
   if (params.get("qcrt") === "off" || !navigator.xr) return
+  // ponytail: capture/math mirrors static/index.html because the installed
+  // CloudXR host only serves its fixed three assets. Extract a shared core
+  // when NVIDIA exposes a supported client-extension module hook.
   const PRODUCT_DEFAULTS = {
     panelHiddenAtStart: "true",
     controllerModelVisibility: "hide",

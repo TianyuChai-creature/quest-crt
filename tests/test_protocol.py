@@ -4,7 +4,7 @@ import unittest
 
 from pydantic import ValidationError
 
-from server import PoseFrame
+from server import PoseFrame, app, viewer_app
 
 
 def valid_frame_v2() -> dict[str, object]:
@@ -44,6 +44,44 @@ def valid_frame_v4() -> dict[str, object]:
 
 
 class PoseProtocolTests(unittest.TestCase):
+    def test_public_http_and_websocket_routes_remain_available(self) -> None:
+        def contracts(application: object) -> set[tuple[str, str]]:
+            result: set[tuple[str, str]] = set()
+            for route in application.routes:  # type: ignore[attr-defined]
+                methods = getattr(route, "methods", None)
+                if methods:
+                    result.update((method, route.path) for method in methods)
+                else:
+                    result.add(("WS", route.path))
+            return result
+
+        self.assertEqual(
+            contracts(app),
+            {
+                ("GET", "/openapi.json"),
+                ("HEAD", "/openapi.json"),
+                ("GET", "/"),
+                ("GET", "/health"),
+                ("GET", "/api/coordinate-transform"),
+                ("PUT", "/api/coordinate-transform"),
+                ("POST", "/api/webrtc/offer"),
+                ("WS", "/ws"),
+            },
+        )
+        self.assertEqual(
+            contracts(viewer_app),
+            {
+                ("GET", "/openapi.json"),
+                ("HEAD", "/openapi.json"),
+                ("GET", "/"),
+                ("GET", "/health"),
+                ("GET", "/api/coordinate-transform"),
+                ("PUT", "/api/coordinate-transform"),
+                ("WS", "/ws"),
+                ("WS", "/ws/stream"),
+            },
+        )
+
     def test_pose_v2_accepts_wrist_orientations(self) -> None:
         frame = PoseFrame.model_validate(valid_frame_v2())
 

@@ -17,7 +17,10 @@ class CloudXRClientTests(unittest.TestCase):
             source = root / "official"
             output = root / "generated"
             source.mkdir()
-            original = '<html><head><script defer="defer" src="bundle.js"></script></head></html>'
+            original = (
+                '<html><head><script defer="defer" src="bundle.js"></script></head>'
+                '<body><div id="2d-ui"><button id="startButton"></button></div></body></html>'
+            )
             (source / "index.html").write_text(original, encoding="utf-8")
             (source / "bundle.js").write_bytes(b"official")
             (source / "bundle.emulator.js").write_bytes(b"emulator")
@@ -31,6 +34,19 @@ class CloudXRClientTests(unittest.TestCase):
             self.assertIn('panelHiddenAtStart: "true"', generated)
             self.assertEqual((source / "index.html").read_text(encoding="utf-8"), original)
 
+    def test_prepare_rejects_incompatible_cloudxr_dom(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory) / "official"
+            source.mkdir()
+            (source / "index.html").write_text(
+                '<div id="2d-ui"></div><script src="bundle.js"></script>',
+                encoding="utf-8",
+            )
+            (source / "bundle.js").write_bytes(b"official")
+            (source / "bundle.emulator.js").write_bytes(b"emulator")
+            with self.assertRaisesRegex(ValueError, "missing DOM IDs: startButton"):
+                prepare_client(source, Path(directory) / "generated")
+
     def test_pose_entry_makes_video_optional(self) -> None:
         index = (Path(__file__).parents[1] / "static" / "index.html").read_text(
             encoding="utf-8"
@@ -38,6 +54,12 @@ class CloudXRClientTests(unittest.TestCase):
         self.assertIn('<input id="video-mode" type="checkbox" />', index)
         self.assertIn(":48322/client/", index)
         self.assertIn('enterButton.addEventListener("click", enterXR)', index)
+
+        launcher = (Path(__file__).parents[1] / "scripts" / "run_cloudxr_zed.sh").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn('grep -hF "/sign_in?peer_id="', launcher)
+        self.assertNotIn("Proxying .* /sign_in", launcher)
 
     def test_cloudxr_origin_can_preflight_webrtc_offer(self) -> None:
         messages: list[dict[str, object]] = []

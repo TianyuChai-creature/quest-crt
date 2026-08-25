@@ -46,19 +46,14 @@ Quest Browser
 ```text
 quest-crt/
 ├── server.py                  # 服务入口、WebRTC/WSS、协议校验、日志和证书
-├── quest_crt/
-│   ├── __init__.py            # 公共 Python API
-│   ├── binary_protocol.py     # 628字节WebRTC姿态编解码及604字节旧帧兼容
-│   └── coordinates.py         # 坐标变换实现
-├── static/
-│   ├── index.html             # Quest WebXR 采集页
-│   └── viewer.html            # PC 端 3D Viewer
-├── tests/
-│   ├── test_coordinates.py    # 坐标变换和腕部局部表达测试
-│   ├── test_protocol.py       # Pose v2/v3/v4 协议校验测试
-│   └── test_relay_notifier.py # 跨线程下游通知测试
+├── quest_crt/                 # 协议、坐标、StablePoseStream、UDP 与遥测
+├── static/                    # Quest operator UI 与 PC 端 3D Viewer
+├── cloudxr/                   # ZED 配置与同会话 QCRT exporter
+├── scripts/                   # 硬件预检、客户端生成、启动与契约检查
+├── tests/                     # 单元、公开接口与 CloudXR 边界回归
 ├── certs/                     # 自动生成的开发证书和私钥
 ├── logs/                      # 原始姿态 JSONL 日志
+├── CLOUDXR_INTEGRATION_WORKFLOW.md # H1–H6 实机验证记录
 ├── pyproject.toml             # Python 版本和依赖
 └── uv.lock                    # 锁定依赖版本
 ```
@@ -119,13 +114,14 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 证书，避免 Quest Browser 对 `48322` 和 `8000` 分别放行两张自签名证书。默认关闭
 姿态 JSONL 以减少实时链路 I/O；需要记录时设置 `POSE_LOG_ENABLED=1`。可通过
 `CAMERA_CONFIG` 覆盖相机配置，但验收基线是
-`cloudxr/camera_viz_zed_60fps.yaml`。启动器会先等待 Quest 在 TCP 48322 建立连接，
-再创建 camera_viz OpenXR 应用，避免干净启动时 `XR_ERROR_FORM_FACTOR_UNAVAILABLE`。
+`cloudxr/camera_viz_zed_60fps.yaml`。启动器会观察 Quest 的 WSS `/sign_in`，再创建
+camera_viz OpenXR 应用，避免单纯打开页面就提前触发
+`XR_ERROR_FORM_FACTOR_UNAVAILABLE`。
 默认入口 `https://<PC-IP>:8000/` 立即提供姿态-only；视频开关默认关闭。启动器无限等待
 可选视频连接，正整数 `QUEST_WAIT_SECONDS` 可设置超时；视频进程退出不会带停姿态服务。
 CloudXR 页面默认显示与 main 主线一致的 Quest CRT 简洁入口；NVIDIA 原始表单通过
-“高级设置”进入，不参与日常操作。勾选视频会立即切换到视频准备页；由于 WebXR 要求
-目标页面上的用户手势，操作者在该页只点击一次“开始准备”即可进入 XR。
+**Advanced settings** 进入，不参与日常操作。勾选视频会立即切换到视频准备页；由于
+WebXR 要求目标页面上的用户手势，操作者在该页只点击一次 **Start prep** 即可进入 XR。
 
 CloudXR Runtime/CloudXR.js、IsaacTeleop/Televiz 与 ZED SDK/pyzed 均须单独安装并遵守
 各自上游许可；本仓不分发这些组件。NVIDIA CloudXR EULA 必须由使用者明确接受，
@@ -204,7 +200,7 @@ curl -k https://127.0.0.1:8001/health
 2. 在 Quest Browser 打开 `https://<PC-IP>:8000/`。
 3. 首次使用自签名证书时，在浏览器中确认继续访问。
 4. 等页面的传输通道变为 `WebRTC open`；协商失败时会显示 `WSS fallback open`。
-5. 点击“进入XR并开始传输”，同意所需权限。
+5. 点击 **Start prep**，同意所需权限。
 6. 确认 WebXR 状态为 `running`，已发送计数持续增加。
 7. 在 PC 浏览器打开 `https://<PC-IP>:8001/` 查看实时 46 点画面与坐标。
 8. 查看服务终端中的接收 FPS、序号和追踪状态。
@@ -220,10 +216,10 @@ Quest 页面进入的是 `immersive-ar` 会话，并要求 `local-floor` 和 `ha
 
 | 项目 | 含义 |
 |---|---|
-| `传输通道` | 优先显示 `WebRTC open`，不可用时自动显示WSS回退状态 |
+| `Transport` | 优先显示 `WebRTC open`，不可用时自动显示WSS回退状态 |
 | `WebXR` | XR 会话状态 |
-| `已发送` | 当前 XR 会话成功交给活动传输通道的帧数 |
-| `本地缓冲丢帧` | 因活动通道存在未清空发送缓冲而主动跳过的XR帧数 |
+| `Sent` | 当前 XR 会话成功交给活动传输通道的帧数 |
+| `Local drops` | 因活动通道存在未清空发送缓冲而主动跳过的XR帧数 |
 
 通道断开后页面每秒自动重新尝试WebRTC，失败才回退WSS。XR会话仍在运行时，重连后
 继续沿用当前 `session_id` 和序号。
@@ -901,7 +897,7 @@ out_fps= 89.7 | seq=8641 | delivery=latest-only | transform=body
 5. PC 浏览器能否打开相同 URL；
 6. 多网卡环境下自动探测 IP 是否选错。
 
-### 15.2 页面停在“等待PC连接”
+### 15.2 页面停在 **Waiting for PC**
 
 这表示WebRTC和WSS回退均未建立。检查证书是否已被Quest接受、端口是否被代理或
 防火墙阻断，以及服务端是否打印 `Quest connected ... via webrtc`。如果页面显示
