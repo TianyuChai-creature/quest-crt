@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Quest CRT · 人体姿态采集</title>
+    <title>Quest CRT · Body Pose Capture</title>
     <style>
       :root {
         color-scheme: dark;
@@ -204,46 +204,46 @@
   <body>
     <main>
       <div class="eyebrow">Quest CRT · Operator link</div>
-      <h1>人体姿态采集</h1>
+      <h1>Body pose capture</h1>
       <p>
-        读取双手各21个关键点以及左右肩、肘位置，转换为上背部人体坐标后通过低延迟WebRTC发送到PC。
-        姿态传输始终是主功能；需要现场视觉时，可额外开启 ZED 视频回传。
+        Streams 21 landmarks per hand plus shoulder and elbow positions to the PC in the upper-back body frame.
+        Pose is the primary function; enable ZED video only when visual feedback is needed.
       </p>
 
       <div class="modes">
         <div class="mode">
           <div>
-            <strong>人体姿态传输</strong>
-            <small>双手、肩、肘 · QCRT 低延迟上行</small>
+            <strong>Body pose stream</strong>
+            <small>Hands, shoulders, elbows · low-latency QCRT</small>
           </div>
-          <span class="primary-tag">始终开启</span>
+          <span class="primary-tag">Always on</span>
         </div>
         <label class="mode video-mode" for="video-mode">
           <div>
-            <strong>视频回传</strong>
-            <small>ZED Mini · 720p60 · 开启后进入视频准备页</small>
+            <strong>Video return</strong>
+            <small>ZED Mini · 720p60 · opens the video prep page</small>
           </div>
           <input id="video-mode" type="checkbox" />
           <span class="switch" aria-hidden="true"></span>
         </label>
       </div>
 
-      <button id="enter-xr" disabled>等待PC连接</button>
+      <button id="enter-xr" disabled>Waiting for PC</button>
       <p class="hint" id="prep-hint">
-        点击后仅需<strong>一次</strong>操作：进入 XR 后将有 <strong>3 秒</strong>倒计时，
-        请用双手摆成与机械臂相近的姿势。<strong>摆姿期间不要再点击</strong>；倒计时结束自动开始向 PC 传输。
+        One tap only: after you enter XR there is a <strong>3-second</strong> countdown.
+        Hold a pose close to the robot arms. <strong>Do not tap the UI during the countdown</strong>; streaming to the PC starts automatically when it ends.
       </p>
 
       <div class="status">
-        <span>传输通道</span>
+        <span>Transport</span>
         <span class="value" id="transport-status">connecting</span>
-        <span>会话</span>
+        <span>Session</span>
         <span class="value" id="session-phase">idle</span>
         <span>WebXR</span>
         <span class="value" id="xr-status">idle</span>
-        <span>已发送</span>
+        <span>Sent</span>
         <span class="value" id="sent-count">0</span>
-        <span>本地缓冲丢帧</span>
+        <span>Local drops</span>
         <span class="value" id="drop-count">0</span>
       </div>
     </main>
@@ -316,8 +316,8 @@
       const WS_MAX_BUFFERED_BYTES = 16 * 1024
       /** Scheme A: single click → XR → countdown (no pose) → auto stream. No second click. */
       const PREP_COUNTDOWN_S = 3
-      const PREP_HINT_ZH =
-        "请摆成与机械臂相近的姿势\n双手不要再点击界面"
+      const PREP_HINT =
+        "Hold a pose close to the robot arms\nDo not tap the UI"
       const enterButton = document.querySelector("#enter-xr")
       const transportStatus = document.querySelector("#transport-status")
       const sessionPhaseEl = document.querySelector("#session-phase")
@@ -360,10 +360,10 @@
         enterButton.disabled = !open || xrSession !== null
         if (!xrSession) {
           if (!open) {
-            enterButton.textContent = "等待PC连接"
+            enterButton.textContent = "Waiting for PC"
             setSessionPhase("idle")
           } else {
-            enterButton.textContent = "开始准备"
+            enterButton.textContent = "Start prep"
             setSessionPhase("ready")
           }
         }
@@ -1147,7 +1147,7 @@
             xrStatus.textContent = "ended"
             setSessionPhase(transportIsOpen() ? "ready" : "idle")
             enterButton.disabled = !transportIsOpen()
-            enterButton.textContent = transportIsOpen() ? "重新准备" : "等待PC连接"
+            enterButton.textContent = transportIsOpen() ? "Prep again" : "Waiting for PC"
             if (prepHintEl) prepHintEl.classList.remove("hidden")
           })
 
@@ -1225,7 +1225,7 @@
               leftShoulder,
               rightShoulder,
               inPrep
-                ? { show: true, countdown: countdownSec, hint: PREP_HINT_ZH }
+                ? { show: true, countdown: countdownSec, hint: PREP_HINT }
                 : { show: false }
             )
 
@@ -1235,7 +1235,7 @@
                 lastUiUpdate = timestamp
                 sentCount.textContent = String(sent)
                 dropCount.textContent = String(dropped)
-                xrStatus.textContent = inPrep ? `准备中 ${countdownSec}s` : "starting"
+                xrStatus.textContent = inPrep ? `Prep ${countdownSec}s` : "starting"
               }
               return
             }
@@ -1315,7 +1315,7 @@
           xrStatus.textContent = `error: ${error instanceof Error ? error.message : error}`
           setSessionPhase(transportIsOpen() ? "ready" : "idle")
           enterButton.disabled = !transportIsOpen()
-          enterButton.textContent = transportIsOpen() ? "开始准备" : "等待PC连接"
+          enterButton.textContent = transportIsOpen() ? "Start prep" : "Waiting for PC"
           if (prepHintEl) prepHintEl.classList.remove("hidden")
         }
       }

@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -297,32 +297,32 @@
         <span>Handedness</span><span class="value" id="handedness">right-handed</span>
       </div>
       <div class="legend">
-        <span><i class="dot" style="background: #38bdf8"></i>左手</span>
-        <span><i class="dot" style="background: #f472b6"></i>右手</span>
-        <span><i class="dot" style="background: #facc15"></i>双肘</span>
-        <span><i class="dot" style="background: #a3e635"></i>双肩</span>
-        <span><i class="dot" style="background: #ef4444"></i>腕轴 X</span>
-        <span><i class="dot" style="background: #22c55e"></i>腕轴 Y</span>
-        <span><i class="dot" style="background: #3b82f6"></i>腕轴 Z</span>
+        <span><i class="dot" style="background: #38bdf8"></i>Left hand</span>
+        <span><i class="dot" style="background: #f472b6"></i>Right hand</span>
+        <span><i class="dot" style="background: #facc15"></i>Elbows</span>
+        <span><i class="dot" style="background: #a3e635"></i>Shoulders</span>
+        <span><i class="dot" style="background: #ef4444"></i>Wrist X</span>
+        <span><i class="dot" style="background: #22c55e"></i>Wrist Y</span>
+        <span><i class="dot" style="background: #3b82f6"></i>Wrist Z</span>
       </div>
     </section>
 
-    <aside class="coordinates-panel" aria-label="转换后的关键点坐标">
+    <aside class="coordinates-panel" aria-label="Converted landmark coordinates">
       <header class="coordinates-header">
         <div class="coordinates-title">
-          <h2>转换后关键点坐标</h2>
-          <span class="coordinates-seq" id="coordinates-seq">等待数据</span>
+          <h2>Converted landmarks</h2>
+          <span class="coordinates-seq" id="coordinates-seq">Waiting for data</span>
         </div>
         <div class="coordinates-note">
-          wrist / elbow / shoulder：上背部人体坐标 · landmarks：腕部局部坐标 · 单位：m
+          wrist / elbow / shoulder: upper-back body frame · landmarks: wrist-local · units: m
         </div>
       </header>
       <div class="coordinates-body" id="coordinates-body">
-        <div class="coordinates-note">正在等待 8001 /ws Pose 帧…</div>
+        <div class="coordinates-note">Waiting for 8001 /ws pose frames…</div>
       </div>
     </aside>
 
-    <div class="help">默认第一人称非镜像 · 拖动旋转 · 滚轮缩放 · 双击复位</div>
+    <div class="help">Default first-person, no mirror · drag to orbit · scroll to zoom · double-click to reset</div>
     <div id="hover-label"></div>
 
     <script type="module">
@@ -520,7 +520,7 @@
 
       function handCoordinateGroup(side, hand, elbow, shoulder) {
         const isLeft = side === "left"
-        const title = isLeft ? "左手 / 左肘 / 左肩" : "右手 / 右肘 / 右肩"
+        const title = isLeft ? "Left hand / elbow / shoulder" : "Right hand / elbow / shoulder"
         const accent = isLeft ? "left-accent" : "right-accent"
         const landmarks = Array.isArray(hand?.landmarks)
           ? hand.landmarks
@@ -550,7 +550,7 @@
           </div>
           <table class="coordinate-table">
             <colgroup><col /><col /><col /><col /><col /></colgroup>
-            <thead><tr><th>关键点</th><td>X / qx</td><td>Y / qy</td><td>Z / qz</td><td>W / qw</td></tr></thead>
+            <thead><tr><th>Point</th><td>X / qx</td><td>Y / qy</td><td>Z / qz</td><td>W / qw</td></tr></thead>
             <tbody>
               ${vectorRow("wrist world", hand?.wrist?.position ?? landmarks[0])}
               ${orientationRow}
