@@ -69,7 +69,7 @@ LOG_SEGMENT_MAX_BYTES = 256 * 1024 * 1024
 LOG_SEGMENT_MAX_SECONDS = 15 * 60
 LOG_RETENTION_MAX_BYTES = 5 * 1024 * 1024 * 1024
 # StablePoseStream (sensing main channel; decoupled from Viewer event delivery)
-STREAM_HZ = float(os.environ.get("STREAM_HZ", "72"))
+STREAM_HZ = float(os.environ.get("STREAM_HZ", "90"))
 STREAM_HOLD_MS = float(os.environ.get("STREAM_HOLD_MS", "100"))
 STREAM_LOST_MS = float(os.environ.get("STREAM_LOST_MS", "500"))
 # /ws/stream wire format: binary (default) or json

@@ -104,7 +104,7 @@ class StreamClock:
         snapshot_pose: PoseSnapshotFn,
         build_output: BuildOutputFn,
         bus: StreamBus | None = None,
-        hz: float = 72.0,
+        hz: float = 90.0,
         hold_ms: float = 100.0,
         lost_ms: float = 500.0,
         idle_hz: float = 5.0,

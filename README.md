@@ -11,7 +11,7 @@ WebXR 会话中附加 ZED Mini → Televiz → CloudXR 视频；视频故障不�
 |---|---:|---|
 | 人体姿态上行 | 开启 | QCRT 628 B WebRTC；WSS JSON 回退 |
 | real-Teleop 输出 | 开启 | `:8001/ws`，事件驱动 JSON |
-| DIME 传感流 | 开启 | `:8001/ws/stream`，72 Hz QSTR v1 |
+| DIME 传感流 | 开启 | `:8001/ws/stream`，90 Hz QSTR v1 |
 | ZED 视频回传 | **关闭** | 每眼 1280×720 @ 60 FPS，CloudXR |
 
 ## 架构
@@ -142,7 +142,7 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 | 8000 | `/health` | 运维 | 按需 | JSON |
 | 8000/8001 | `/api/coordinate-transform` | 运维 | 按需 | JSON |
 | 8001 | `/ws` | real-Teleop / Viewer | 事件驱动 latest | JSON |
-| 8001 | `/ws/stream` | DIME | 固定 72 Hz | QSTR v1（二进制默认） |
+| 8001 | `/ws/stream` | DIME | 固定 90 Hz | QSTR v1（二进制默认） |
 
 兼容保证：
 
@@ -170,7 +170,7 @@ X = 前    Y = 上    Z = 右    单位 = 米
 Quest 已传数时：
 
 ```bash
-# 健康、WebRTC 与 72 Hz QSTR
+# 健康、WebRTC 与 90 Hz QSTR
 uv run python scripts/check_stream.py --seconds 5
 
 # 只读验证真实 /ws 与 /ws/stream 下游契约
@@ -206,7 +206,7 @@ PYTHONPATH=. python -m unittest discover -s tests -v
 | `POSE_PORT` | `8000` | Quest、信令和上行 WSS |
 | `OUTPUT_PORT` | `8001` | Viewer 与下游流 |
 | `POSE_LOG_ENABLED` | `1` | JSONL 日志；一体化启动器默认设为 `0` |
-| `STREAM_HZ` | `72` | StablePoseStream 频率 |
+| `STREAM_HZ` | `90` | StablePoseStream 频率 |
 | `POSE_CERT_FILE` / `POSE_KEY_FILE` | 自动生成 | 必须成对设置的外部 TLS 文件 |
 | `CAMERA_VIZ_DIR` | 无 | IsaacTeleop camera_viz 目录 |
 | `CAMERA_CONFIG` | ZED 720p60 配置 | 一体化相机配置 |

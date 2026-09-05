@@ -119,7 +119,7 @@ def main(argv: list[str] | None = None) -> int:
         help="if set, sample UDP instead of WSS (server needs STREAM_UDP=1)",
     )
     p.add_argument("--seconds", type=float, default=3.0, help="sample window (default 3s)")
-    p.add_argument("--expect-hz", type=float, default=72.0)
+    p.add_argument("--expect-hz", type=float, default=90.0)
     args = p.parse_args(argv)
 
     print("quest-crt stream check")
@@ -139,7 +139,7 @@ def main(argv: list[str] | None = None) -> int:
         print()
         print("Start server first, e.g.:")
         print(
-            "  POSE_LOG_ENABLED=0 STREAM_HZ=72 STREAM_UDP=1 "
+            "  POSE_LOG_ENABLED=0 STREAM_HZ=90 STREAM_UDP=1 "
             "uv run python server.py"
         )
         print("Then on Quest: open :8000, WebRTC, start XR streaming.")
