@@ -19,8 +19,8 @@ Y 上、Z 右的右手人体坐标，单位为米；腕部四元数同步换基�
 ```text
 Quest Browser
   │  HTTPS: 采集页面
-  │  WebRTC DataChannel: 628字节、30ms寿命二进制Pose（无线主通道）
-  │  WSS /ws: Pose v4 JSON（自动回退）
+  │  WebRTC DataChannel: 636字节、30ms寿命二进制Pose（无线主通道）
+  │  WSS /ws: Pose v5 JSON（自动回退）
   ▼
 8000 / Pose 服务 ──── 后台线程写入 logs/*.jsonl（原始上背部人体坐标）
   │
@@ -240,7 +240,7 @@ Viewer 直接订阅 `8001/ws`，不读取 `logs/`。打开 Viewer 时如果 Pose
 | 8000 | HTTPS GET | `/` | Quest 采集页 |
 | 8000 | HTTPS POST | `/api/webrtc/offer` | WebRTC SDP协商 |
 | 8000 | WebRTC DataChannel | `pose` | 无序、30 ms消息寿命二进制Pose上行 |
-| 8000 | WSS | `/ws` | Quest Pose v4 JSON回退通道；兼容旧v2/v3发送端 |
+| 8000 | WSS | `/ws` | Quest Pose v5 JSON回退通道；兼容旧v2–v4发送端 |
 | 8000 | HTTPS GET | `/health` | Pose 服务健康检查 |
 | 8000 | GET/PUT | `/api/coordinate-transform` | 查询或修改 Viewer 输出坐标 |
 | 8001 | HTTPS GET | `/` | PC 端 Viewer |
@@ -250,22 +250,23 @@ Viewer 直接订阅 `8001/ws`，不读取 `logs/`。打开 Viewer 时如果 Pose
 
 FastAPI 的 Swagger 和 ReDoc 页面均已关闭。两个坐标 API 路径操作的是同一份进程内状态。
 
-## 7. 原始 Pose v4 数据格式
+## 7. 原始 Pose v5 数据格式
 
 Quest默认通过WebRTC发送固定长度二进制帧；协商失败时向 `8000/ws` 发送UTF-8 JSON
-文本帧。两种通道解码后都进入相同的Pose v4严格校验，随后才会写日志并发布给Viewer。
+文本帧。两种通道解码后都进入相同的Pose v5严格校验，随后才会写日志并发布给Viewer。
 一个完整的未追踪JSON帧如下：
 
 ```json
 {
   "type": "pose",
-  "version": 4,
+  "version": 5,
   "session_id": "407b7a3f-4791-479c-aa81-48e813aca057",
   "seq": 1,
   "timestamp_ms": 339989.138,
   "capture_epoch_ms": 1784628000123.456,
   "reference_space": "spine-upper-scapula",
   "units": "meters",
+  "head": {"tracked": false, "yaw_deg": null, "pitch_deg": null},
   "hands": {
     "left": {
       "tracked": false,
@@ -304,32 +305,31 @@ Quest默认通过WebRTC发送固定长度二进制帧；协商失败时向 `8000
 交给协议栈后的有效传输时间。SDP通过同源HTTPS
 `POST /api/webrtc/offer` 交换；局域网路径默认不配置外部STUN/TURN。
 
-当前采集页每包固定628字节，所有多字节数值使用little-endian：
+当前采集页每包固定636字节，所有多字节数值使用little-endian：
 
 | 偏移 | 长度 | 类型 | 内容 |
 |---:|---:|---|---|
 | 0 | 4 | bytes | ASCII `QCRT` |
-| 4 | 1 | uint8 | 二进制协议版本，当前为3 |
-| 5 | 1 | uint8 | 左手、右手、左肘、右肘、左肩、右肩追踪位 |
+| 4 | 1 | uint8 | 二进制协议版本，当前为4 |
+| 5 | 1 | uint8 | 左手、右手、左肘、右肘、左肩、右肩、head 追踪位 |
 | 6 | 2 | uint16 | 保留，必须为0 |
 | 8 | 4 | uint32 | `seq` |
 | 12 | 8 | float64 | `timestamp_ms` |
 | 20 | 8 | float64 | `capture_epoch_ms` |
 | 28 | 16 | bytes | `session_id` UUID |
-| 44 | 584 | 146×float32 | 位置和腕部四元数 |
+| 44 | 592 | 148×float32 | 位置、腕部四元数与头部角度 |
 
-146个float32的顺序为：左手21×XYZ、右手21×XYZ、左腕XYZW四元数、右腕XYZW
-四元数、左肘XYZ、右肘XYZ、左肩XYZ、右肩XYZ。不可用向量的全部分量写为NaN；混合
-有限值与NaN会被服务端拒绝。服务端解码后重建下面的Pose v4对象，因此日志与8001
-消费者无需理解该二进制布局。服务端继续接受二进制版本2的628字节/Pose v3帧，以及
-二进制版本1的604字节/Pose v2帧；Pose v2不包含 `shoulders`。
+148个float32的顺序为：左手21×XYZ、右手21×XYZ、左腕XYZW四元数、右腕XYZW
+四元数、左肘XYZ、右肘XYZ、左肩XYZ、右肩XYZ、head yaw/pitch（度）。不可用向量的
+全部分量写为NaN；混合有限值与NaN会被服务端拒绝。服务端解码后重建Pose v5对象。
+旧二进制版本3/2的628字节帧和版本1的604字节帧仍可解码。
 
 ### 7.2 顶层字段
 
 | 字段 | 类型 | 约束 | 含义 |
 |---|---|---|---|
 | `type` | string | 固定为 `"pose"` | 消息类型 |
-| `version` | integer | 当前发送端固定为 `4` | 协议版本；服务端兼容旧v2/v3 |
+| `version` | integer | 当前发送端固定为 `5` | 协议版本；服务端兼容旧v2–v4 |
 | `session_id` | string | 非空 | 每次进入 XR 时生成的 UUID |
 | `seq` | integer | `>= 1` | 会话内每次可发送XR采样的递增序号 |
 | `timestamp_ms` | number | `>= 0` | WebXR 帧回调的单调时间戳，单位毫秒 |
@@ -338,7 +338,8 @@ Quest默认通过WebRTC发送固定长度二进制帧；协商失败时向 `8000
 | `units` | string | 固定为 `"meters"` | 位置单位 |
 | `hands` | object | 必须含 `left/right` | 双手数据 |
 | `elbows` | object | 必须含 `left/right` | 双肘数据 |
-| `shoulders` | object | v3/v4必须含 `left/right` | 双肩数据 |
+| `shoulders` | object | v3–v5必须含 `left/right` | 双肩数据 |
+| `head` | object | v5 必填；未追踪时角度均为 null | 身体相对 yaw/pitch，单位度 |
 
 `timestamp_ms` **不是 Unix 时间戳，也不是服务端接收时间**，不能直接转换为日期。同一 XR 会话内可以用差值计算帧间隔：
 
@@ -359,6 +360,11 @@ capture_epoch_ms = performance.timeOrigin + timestamp_ms
 判为无效。新增必填字段或改变既有字段语义时应提升版本；像 `capture_epoch_ms` 这样的
 可选兼容字段也必须同步修改发送端、校验模型和消费端。
 
+Pose v5 的 head 由同帧 WebXR viewer 姿态的局部 -Z 前向量计算；在上背身体坐标中
+`yaw_deg = atan2(forward_z, forward_x)` 向右为正，
+`pitch_deg = atan2(forward_y, hypot(forward_x, forward_z))` 向上为正。
+两角度始终保留身体坐标语义，不随 Viewer 坐标预设变化。旧 Pose v2–v4 不含 head。
+
 ### 7.3 三维点
 
 有效位置为三个 JSON 数字组成的数组：
@@ -367,7 +373,7 @@ capture_epoch_ms = performance.timeOrigin + timestamp_ms
 [x, y, z]
 ```
 
-Pose v4 的三维点使用上背部人体坐标：
+Pose v4/v5 的三维点使用上背部人体坐标：
 
 - `x`：人体前方为正；
 - `y`：向上为正；
@@ -631,7 +637,7 @@ with source.open(encoding="utf-8") as src, target.open(
 wss://<PC-IP>:8001/ws
 ```
 
-输出以原始 Pose v4 为基础，先对人体参考位置和腕部姿态应用当前坐标变换，再把每只手转换
+输出以原始 Pose v4/v5 为基础，先对人体参考位置和腕部姿态应用当前坐标变换，再把每只手转换
 为 HTS 式腕部局部表达。顶层增加：
 
 ```json
@@ -820,9 +826,9 @@ output_frame = to_hts_wrist_relative_frame(flu_frame)
 服务端接受帧的主要约束：
 
 - 所有协议对象都拒绝未知字段；
-- `type` 必须为 `pose`，`version` 必须为 `2`、`3` 或 `4`；
-- Pose v3/v4 必须包含双肩，兼容的 Pose v2 必须不包含 `shoulders`；
-- Pose v4 的 `reference_space` 必须为 `spine-upper-scapula`，v2/v3 必须为 `local-floor`；
+- `type` 必须为 `pose`，`version` 必须为 `2`、`3`、`4` 或 `5`；
+- Pose v3–v5 必须包含双肩，兼容的 Pose v2 必须不包含 `shoulders`；
+- Pose v4/v5 的 `reference_space` 必须为 `spine-upper-scapula`，v2/v3 必须为 `local-floor`；
 - `session_id` 非空；
 - `seq >= 1`、`timestamp_ms >= 0`；
 - 每只手必须正好有 21 个点；
@@ -831,6 +837,7 @@ output_frame = to_hts_wrist_relative_frame(flu_frame)
 - 腕部四元数必须为四个数且不能是零四元数；
 - 肘部 `tracked` 必须与 `position` 是否非空完全一致；
 - 肩部 `tracked` 必须与 `position` 是否非空完全一致；
+- Pose v5 的 head 必填；tracked=true 时 yaw/pitch 都必须有效，否则都为 null；
 - 每个有效点必须正好包含三个可转换为浮点数的数值。
 
 无效帧会在终端输出 `Invalid pose frame ...`，随后丢弃；连接不会因此自动关闭。无效帧不会写入 JSONL，也不会发布到 `8001`。
@@ -967,8 +974,8 @@ uv run python -m unittest discover -s tests -v
 - 非法轴规则拒绝；
 - Pose 帧坐标转换与输入不变性；
 - 腕部局部坐标转换、参考坐标重建和换基后姿态一致性；
-- Pose v4人体参考空间、Pose v3肩部兼容、Pose v2兼容和旧协议版本拒绝；
-- 二进制v3/v2/v1姿态编解码、628/604字节兼容、空值表示和非法数据拒绝；
+- Pose v5头部角度、Pose v4人体参考空间、Pose v3肩部兼容、Pose v2兼容和旧协议版本拒绝；
+- 二进制v4/v3/v2/v1姿态编解码、636/628/604字节兼容、空值表示和非法数据拒绝；
 - 跨线程通知唤醒 Viewer 订阅者。
 - latest-only 入口覆盖、无序二进制包最大序号保留和异步日志写入。
 

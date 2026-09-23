@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from quest_crt.binary_protocol import (
+    HEAD_PACKET_SIZE,
     LEGACY_PACKET_SIZE,
     PACKET_SIZE,
     decode_pose_packet,
@@ -52,6 +53,17 @@ def pose_frame_v4() -> dict[str, object]:
     return frame
 
 
+def pose_frame_v5(tracked: bool = True) -> dict[str, object]:
+    frame = pose_frame_v4()
+    frame["version"] = 5
+    frame["head"] = {
+        "tracked": tracked,
+        "yaw_deg": 30.0 if tracked else None,
+        "pitch_deg": -20.0 if tracked else None,
+    }
+    return frame
+
+
 class BinaryPoseProtocolTests(unittest.TestCase):
     def test_v2_round_trip_legacy_size(self) -> None:
         source = pose_frame_v2()
@@ -84,6 +96,16 @@ class BinaryPoseProtocolTests(unittest.TestCase):
         self.assertTrue(decoded["shoulders"]["left"]["tracked"])
         self.assertAlmostEqual(decoded["shoulders"]["left"]["position"][2], 0.15)
         self.assertAlmostEqual(decoded["shoulders"]["right"]["position"][2], -0.15)
+
+    def test_v5_round_trip_includes_head_and_missing_tracking(self) -> None:
+        for tracked in (True, False):
+            source = pose_frame_v5(tracked)
+            packet = encode_pose_packet(source)
+            decoded = decode_pose_packet(packet)
+            self.assertEqual(len(packet), HEAD_PACKET_SIZE)
+            self.assertEqual(HEAD_PACKET_SIZE, 636)
+            self.assertEqual(decoded["version"], 5)
+            self.assertEqual(decoded["head"], source["head"])
 
     def test_invalid_size_and_magic_are_rejected(self) -> None:
         packet = encode_pose_packet(pose_frame_v2())

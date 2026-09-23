@@ -48,7 +48,7 @@
     "pinky-finger-phalanx-distal",
     "pinky-finger-tip",
   ]
-  const BINARY_PACKET_SIZE = 628
+  const BINARY_PACKET_SIZE = 636
   const BODY_FRAME_EPSILON = 1e-6
   const RTC_PACKET_LIFETIME_MS = 30
   const WS_MAX_BUFFERED_BYTES = 16 * 1024
@@ -761,6 +761,31 @@
     return rotation ? matrixToQuaternion(multiplyMatrix3(bodyFrame.matrix, rotation)) : null
   }
 
+  function readHead(frame, referenceSpace, bodyFrame) {
+    const missing = { tracked: false, yaw_deg: null, pitch_deg: null }
+    let orientation
+    try {
+      orientation = frame.getViewerPose(referenceSpace)?.transform.orientation
+    } catch {
+      return missing
+    }
+    if (!orientation) return missing
+    const rotation = quaternionToMatrix([
+      orientation.x, orientation.y, orientation.z, orientation.w,
+    ])
+    if (!rotation) return missing
+    // WebXR head forward is local -Z; the body frame is X forward, Y up, Z right.
+    const forward = rotation.map((row) => -row[2])
+    const [x, y, z] = bodyFrame.matrix.map((axis) => dotVectors(axis, forward))
+    const horizontal = Math.hypot(x, z)
+    if (!Number.isFinite(horizontal) || horizontal < BODY_FRAME_EPSILON) return missing
+    return {
+      tracked: true,
+      yaw_deg: Math.atan2(z, x) * 180 / Math.PI,
+      pitch_deg: Math.atan2(y, horizontal) * 180 / Math.PI,
+    }
+  }
+
   function transformHandToBodyFrame(hand, bodyFrame) {
     return {
       tracked: hand.tracked,
@@ -774,7 +799,7 @@
     const view = new DataView(buffer)
     let offset = 0
     for (const byte of [0x51, 0x43, 0x52, 0x54]) view.setUint8(offset++, byte)
-    view.setUint8(offset++, 3)
+    view.setUint8(offset++, 4)
     let flags = 0
     if (packet.hands.left.tracked) flags |= 1 << 0
     if (packet.hands.right.tracked) flags |= 1 << 1
@@ -782,6 +807,7 @@
     if (packet.elbows.right.tracked) flags |= 1 << 3
     if (packet.shoulders.left.tracked) flags |= 1 << 4
     if (packet.shoulders.right.tracked) flags |= 1 << 5
+    if (packet.head.tracked) flags |= 1 << 6
     view.setUint8(offset++, flags)
     view.setUint16(offset, 0, true)
     offset += 2
@@ -811,6 +837,7 @@
     writeVector(packet.elbows.right.position, 3)
     writeVector(packet.shoulders.left.position, 3)
     writeVector(packet.shoulders.right.position, 3)
+    writeVector(packet.head.tracked ? [packet.head.yaw_deg, packet.head.pitch_deg] : null, 2)
     if (offset !== BINARY_PACKET_SIZE) throw new Error(`binary pose size mismatch: ${offset}`)
     return buffer
   }
@@ -834,13 +861,14 @@
     if (!bodyFrame) return null
     return {
       type: "pose",
-      version: 4,
+      version: 5,
       session_id: sessionId,
       seq: ++seq,
       timestamp_ms: timestamp,
       capture_epoch_ms: performance.timeOrigin + timestamp,
       reference_space: "spine-upper-scapula",
       units: "meters",
+      head: readHead(frame, referenceSpace, bodyFrame),
       hands: {
         left: transformHandToBodyFrame(leftHand, bodyFrame),
         right: transformHandToBodyFrame(rightHand, bodyFrame),

@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import ipaddress
 import json
+import math
 import os
 import queue
 import socket
@@ -397,6 +398,30 @@ class PoseJoints(BaseModel):
     right: PoseJoint
 
 
+class PoseHead(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    tracked: bool
+    yaw_deg: float | None
+    pitch_deg: float | None
+
+    @model_validator(mode="after")
+    def tracked_matches_angles(self) -> PoseHead:
+        if self.tracked != (self.yaw_deg is not None) or self.tracked != (
+            self.pitch_deg is not None
+        ):
+            raise ValueError("tracked head must contain both angles")
+        if self.yaw_deg is not None and (
+            not math.isfinite(self.yaw_deg) or not -180 <= self.yaw_deg <= 180
+        ):
+            raise ValueError("head yaw must be finite and within [-180, 180]")
+        if self.pitch_deg is not None and (
+            not math.isfinite(self.pitch_deg) or not -90 <= self.pitch_deg <= 90
+        ):
+            raise ValueError("head pitch must be finite and within [-90, 90]")
+        return self
+
+
 # Backward-compatible alias (older stream-only tree used PoseElbows).
 PoseElbows = PoseJoints
 
@@ -405,7 +430,7 @@ class PoseFrame(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     type: Literal["pose"]
-    version: Literal[2, 3, 4]
+    version: Literal[2, 3, 4, 5]
     session_id: str = Field(min_length=1)
     seq: int = Field(ge=1)
     timestamp_ms: float = Field(ge=0)
@@ -415,6 +440,7 @@ class PoseFrame(BaseModel):
     hands: PoseHands
     elbows: PoseJoints
     shoulders: PoseJoints | None = None
+    head: PoseHead | None = None
 
     @model_validator(mode="after")
     def fields_match_protocol_version(self) -> PoseFrame:
@@ -422,8 +448,10 @@ class PoseFrame(BaseModel):
             raise ValueError(f"pose v{self.version} must contain shoulders")
         if self.version == 2 and self.shoulders is not None:
             raise ValueError("pose v2 must not contain shoulders")
+        if (self.version == 5) != (self.head is not None):
+            raise ValueError("pose v5 requires head; older versions must omit it")
         expected_reference_space = (
-            "spine-upper-scapula" if self.version == 4 else "local-floor"
+            "spine-upper-scapula" if self.version >= 4 else "local-floor"
         )
         if self.reference_space != expected_reference_space:
             raise ValueError(
@@ -647,6 +675,8 @@ class PoseStreamProcessor:
         frame_data = frame.model_dump(mode="json")
         if frame_data.get("shoulders") is None:
             frame_data.pop("shoulders", None)
+        if frame_data.get("head") is None:
+            frame_data.pop("head", None)
         frame_data["ingress_transport"] = self._transport
         frame_data["server_received_epoch_ms"] = server_received_epoch_ms
         frame_data["server_received_monotonic_ms"] = server_received_monotonic_ms
@@ -806,7 +836,7 @@ class CoordinateTransformState:
         return {
             "generation": generation,
             "name": name,
-            # Pose v4 ingress is spine-upper body frame; presets remap that basis.
+            # Pose v4/v5 ingress is spine-upper body frame; presets remap that basis.
             "source": "spine-upper-scapula",
             "axes": list(transform.axes),
             "matrix": [list(row) for row in transform.matrix],
@@ -925,6 +955,8 @@ def make_output_pose(
     """
     output = transform_pose_frame(frame, transform)
     output = to_hts_wrist_relative_frame(output)
+    if output.get("head") is None:
+        output.pop("head", None)
     output["coordinate_transform"] = {
         "name": transform_name,
         "source": frame.get("reference_space", "spine-upper-scapula"),

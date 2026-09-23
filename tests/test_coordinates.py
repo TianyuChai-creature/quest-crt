@@ -54,6 +54,7 @@ class CoordinateTransformTests(unittest.TestCase):
         source = {
             "type": "pose",
             "seq": 5,
+            "head": {"tracked": True, "yaw_deg": 20.0, "pitch_deg": -15.0},
             "hands": {
                 "left": {
                     "tracked": True,
@@ -91,6 +92,11 @@ class CoordinateTransformTests(unittest.TestCase):
         self.assertEqual(source["hands"]["left"]["points"][0], [1, 2, 3])
         self.assertEqual(source["shoulders"]["left"]["position"], [7, 8, 9])
         self.assertEqual(result["seq"], 5)
+        self.assertEqual(result["head"], source["head"])
+        self.assertEqual(
+            transform_pose_frame(source, COORDINATE_PRESETS["flu"])["head"],
+            source["head"],
+        )
 
     def test_hts_frame_uses_each_hands_wrist_as_landmark_origin(self) -> None:
         half_turn = pi / 4

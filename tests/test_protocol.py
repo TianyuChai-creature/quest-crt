@@ -43,6 +43,17 @@ def valid_frame_v4() -> dict[str, object]:
     return frame
 
 
+def valid_frame_v5(tracked: bool = True) -> dict[str, object]:
+    frame = valid_frame_v4()
+    frame["version"] = 5
+    frame["head"] = {
+        "tracked": tracked,
+        "yaw_deg": 30.0 if tracked else None,
+        "pitch_deg": -20.0 if tracked else None,
+    }
+    return frame
+
+
 class PoseProtocolTests(unittest.TestCase):
     def test_public_http_and_websocket_routes_remain_available(self) -> None:
         def contracts(application: object) -> set[tuple[str, str]]:
@@ -104,6 +115,23 @@ class PoseProtocolTests(unittest.TestCase):
         del source["shoulders"]
         with self.assertRaises(ValidationError):
             PoseFrame.model_validate(source)
+
+    def test_pose_v5_requires_valid_head(self) -> None:
+        for tracked in (True, False):
+            frame = PoseFrame.model_validate(valid_frame_v5(tracked))
+            self.assertEqual(frame.head.tracked, tracked)
+        missing = valid_frame_v5()
+        del missing["head"]
+        with self.assertRaises(ValidationError):
+            PoseFrame.model_validate(missing)
+        incomplete = valid_frame_v5(False)
+        incomplete["head"]["yaw_deg"] = 5.0
+        with self.assertRaises(ValidationError):
+            PoseFrame.model_validate(incomplete)
+        old = valid_frame_v4()
+        old["head"] = {"tracked": True, "yaw_deg": 0.0, "pitch_deg": 0.0}
+        with self.assertRaises(ValidationError):
+            PoseFrame.model_validate(old)
 
     def test_pose_v2_allows_legacy_frame_without_capture_epoch(self) -> None:
         source = valid_frame_v2()

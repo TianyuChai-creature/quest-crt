@@ -121,7 +121,7 @@ def flip_axis(axis: AxisName) -> AxisTransform:
     return remap_axes(axes)
 
 
-# Every preset maps the Pose v4 body convention (X forward, Y up, Z right)
+# Every preset maps the Pose v4/v5 body convention (X forward, Y up, Z right)
 # into the named output convention. Presets rotate/reflect axes only; they do
 # not restore the discarded local-floor translation.
 COORDINATE_PRESETS: Mapping[str, AxisTransform] = MappingProxyType(
@@ -133,7 +133,7 @@ COORDINATE_PRESETS: Mapping[str, AxisTransform] = MappingProxyType(
     }
 )
 
-# Current Pose v4 input is already spine-upper-relative X-forward/Y-up/Z-right.
+# Current Pose v4/v5 input is already spine-upper-relative X-forward/Y-up/Z-right.
 DEFAULT_COORDINATE_PRESET = "body"
 
 

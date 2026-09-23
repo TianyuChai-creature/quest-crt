@@ -12,11 +12,14 @@ MAGIC = b"QCRT"
 LEGACY_BINARY_VERSION = 1
 SHOULDER_BINARY_VERSION = 2
 BINARY_VERSION = 3
+HEAD_BINARY_VERSION = 4
 _HEADER = struct.Struct("<4sBBHIdd16s")
 _LEGACY_FLOAT_COUNT = 140
 _FLOAT_COUNT = 146
+_HEAD_FLOAT_COUNT = 148
 LEGACY_PACKET_SIZE = _HEADER.size + _LEGACY_FLOAT_COUNT * 4
 PACKET_SIZE = _HEADER.size + _FLOAT_COUNT * 4
+HEAD_PACKET_SIZE = _HEADER.size + _HEAD_FLOAT_COUNT * 4
 
 _LEFT_HAND_TRACKED = 1 << 0
 _RIGHT_HAND_TRACKED = 1 << 1
@@ -24,6 +27,7 @@ _LEFT_ELBOW_TRACKED = 1 << 2
 _RIGHT_ELBOW_TRACKED = 1 << 3
 _LEFT_SHOULDER_TRACKED = 1 << 4
 _RIGHT_SHOULDER_TRACKED = 1 << 5
+_HEAD_TRACKED = 1 << 6
 
 
 def encode_pose_packet(frame: Mapping[str, Any]) -> bytes:
@@ -41,9 +45,13 @@ def encode_pose_packet(frame: Mapping[str, Any]) -> bytes:
         binary_version = BINARY_VERSION
         float_count = _FLOAT_COUNT
         packet_size = PACKET_SIZE
+    elif pose_version == 5:
+        binary_version = HEAD_BINARY_VERSION
+        float_count = _HEAD_FLOAT_COUNT
+        packet_size = HEAD_PACKET_SIZE
     else:
         raise ValueError(f"unsupported pose version {pose_version}")
-    expected_reference_space = "spine-upper-scapula" if pose_version == 4 else "local-floor"
+    expected_reference_space = "spine-upper-scapula" if pose_version >= 4 else "local-floor"
     if frame["reference_space"] != expected_reference_space:
         raise ValueError(
             f"pose v{pose_version} must use reference_space {expected_reference_space!r}"
@@ -67,6 +75,15 @@ def encode_pose_packet(frame: Mapping[str, Any]) -> bytes:
         shoulders = frame["shoulders"]
         flags |= _LEFT_SHOULDER_TRACKED if shoulders["left"]["tracked"] else 0
         flags |= _RIGHT_SHOULDER_TRACKED if shoulders["right"]["tracked"] else 0
+
+    head = frame["head"] if pose_version == 5 else None
+    if head is not None:
+        tracked = bool(head["tracked"])
+        if tracked != (head["yaw_deg"] is not None) or tracked != (
+            head["pitch_deg"] is not None
+        ):
+            raise ValueError("head tracking flag must match both angles")
+        flags |= _HEAD_TRACKED if tracked else 0
 
     packet = bytearray(packet_size)
     _HEADER.pack_into(
@@ -93,6 +110,10 @@ def encode_pose_packet(frame: Mapping[str, Any]) -> bytes:
     if shoulders is not None:
         for shoulder in (shoulders["left"], shoulders["right"]):
             values.extend(_encode_vector(shoulder["position"], 3))
+    if head is not None:
+        values.extend(_encode_vector(
+            [head["yaw_deg"], head["pitch_deg"]] if head["tracked"] else None, 2
+        ))
 
     if len(values) != float_count:
         raise ValueError(f"binary pose payload must contain {float_count} float values")
@@ -105,7 +126,7 @@ def decode_pose_packet(packet: bytes | bytearray | memoryview) -> dict[str, Any]
     view = memoryview(packet)
     if len(view) < _HEADER.size:
         raise ValueError(
-            f"binary pose packet must be exactly {LEGACY_PACKET_SIZE} or {PACKET_SIZE} bytes"
+            f"binary pose packet must be exactly {LEGACY_PACKET_SIZE}, {PACKET_SIZE}, or {HEAD_PACKET_SIZE} bytes"
         )
 
     magic, version, flags, reserved, seq, timestamp_ms, capture_epoch_ms, session_bytes = (
@@ -128,6 +149,11 @@ def decode_pose_packet(packet: bytes | bytearray | memoryview) -> dict[str, Any]
         float_count = _FLOAT_COUNT
         expected_size = PACKET_SIZE
         allowed_flags = 0x3F
+    elif version == HEAD_BINARY_VERSION:
+        pose_version = 5
+        float_count = _HEAD_FLOAT_COUNT
+        expected_size = HEAD_PACKET_SIZE
+        allowed_flags = 0x7F
     else:
         raise ValueError(f"unsupported binary pose version {version}")
     if len(view) != expected_size:
@@ -156,6 +182,9 @@ def decode_pose_packet(packet: bytes | bytearray | memoryview) -> dict[str, Any]
     orientations = [take_vector(4), take_vector(4)]
     elbow_positions = [take_vector(3), take_vector(3)]
     shoulder_positions = [take_vector(3), take_vector(3)] if pose_version >= 3 else None
+    head_angles = take_vector(2) if pose_version == 5 else None
+    if pose_version == 5 and bool(flags & _HEAD_TRACKED) != (head_angles is not None):
+        raise ValueError("head tracking flag must match both angles")
 
     result = {
         "type": "pose",
@@ -164,7 +193,7 @@ def decode_pose_packet(packet: bytes | bytearray | memoryview) -> dict[str, Any]
         "seq": seq,
         "timestamp_ms": timestamp_ms,
         "capture_epoch_ms": capture_epoch_ms,
-        "reference_space": "spine-upper-scapula" if pose_version == 4 else "local-floor",
+        "reference_space": "spine-upper-scapula" if pose_version >= 4 else "local-floor",
         "units": "meters",
         "hands": {
             "left": {
@@ -199,6 +228,12 @@ def decode_pose_packet(packet: bytes | bytearray | memoryview) -> dict[str, Any]
                 "tracked": bool(flags & _RIGHT_SHOULDER_TRACKED),
                 "position": shoulder_positions[1],
             },
+        }
+    if pose_version == 5:
+        result["head"] = {
+            "tracked": bool(flags & _HEAD_TRACKED),
+            "yaw_deg": None if head_angles is None else head_angles[0],
+            "pitch_deg": None if head_angles is None else head_angles[1],
         }
     return result
 

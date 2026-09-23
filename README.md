@@ -9,7 +9,7 @@ WebXR 会话中附加 ZED Mini → Televiz → CloudXR 视频；视频故障不�
 
 | 能力 | 默认 | 稳定契约 |
 |---|---:|---|
-| 人体姿态上行 | 开启 | QCRT 628 B WebRTC；WSS JSON 回退 |
+| 人体姿态上行 | 开启 | QCRT 636 B WebRTC；WSS JSON 回退 |
 | real-Teleop 输出 | 开启 | `:8001/ws`，事件驱动 JSON |
 | DIME 传感流 | 开启 | `:8001/ws/stream`，90 Hz QSTR v1 |
 | ZED 视频回传 | **关闭** | 每眼 1280×720 @ 60 FPS，CloudXR |
@@ -137,7 +137,7 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 | 端口 | 路径 | 消费方 | 节奏 | 格式 |
 |---:|---|---|---|---|
 | 8000 | `/api/webrtc/offer` | Quest | 会话协商 | SDP JSON |
-| 8000 | WebRTC `pose` | Quest → PC | XR 帧驱动 | QCRT 628 B |
+| 8000 | WebRTC `pose` | Quest → PC | XR 帧驱动 | QCRT 636 B |
 | 8000 | `/ws` | Quest → PC 回退 | XR 帧驱动 | Pose JSON |
 | 8000 | `/health` | 运维 | 按需 | JSON |
 | 8000/8001 | `/api/coordinate-transform` | 运维 | 按需 | JSON |
@@ -146,9 +146,9 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 
 兼容保证：
 
-- 当前 628 字节 QCRT 与旧 604 字节帧都可解码；
-- Pose v2 旧 JSON 与 Pose v4 人体坐标帧都受支持；
-- `/ws` 继续输出 shoulders、elbows、wrist pose 与每手 21 个腕部局部 landmarks；
+- 当前 636 字节 QCRT 与旧 604/628 字节帧都可解码；
+- Pose v5 增加头部 yaw/pitch；旧 Pose v2–v4 帧仍可接收；
+- `/ws` 输出身体坐标系的 `head: {tracked, yaw_deg, pitch_deg}`，以及 shoulders、elbows、wrist pose 与每手 21 个腕部局部 landmarks；
 - `/ws/stream` 继续输出 `quality=ok|held|stale|lost` 的 QSTR v1；
 - `quest_crt` 公共 Python 导出、坐标预设与二进制编解码 API 未改变；
 - WebRTC 不可用时仍自动回退到 WSS，下一次完整会话优先恢复 WebRTC。
@@ -162,7 +162,7 @@ X = 前    Y = 上    Z = 右    单位 = 米
 ```
 
 `:8001` 默认使用 `body` 预设，并将双手 21 点转换为各自腕部局部坐标；肩、肘、腕仍在
-人体坐标中。详细数学定义与字段表见
+人体坐标中。头部 yaw 向右为正、pitch 向上为正，均以身体坐标为准，不随 Viewer 坐标预设变化。详细数学定义与字段表见
 [`ENGINEERING_MANUAL.md`](ENGINEERING_MANUAL.md)。
 
 ## 检查与测试
@@ -183,7 +183,7 @@ uv run python scripts/check_runtime_contracts.py --live
 PYTHONPATH=. python -m unittest discover -s tests -v
 ```
 
-测试固定了原有 HTTP/WSS 路由、604/628 字节 QCRT、QSTR、坐标变换、latest-only、日志
+测试固定了原有 HTTP/WSS 路由、604/628/636 字节 QCRT、QSTR、坐标变换、latest-only、日志
 轮转、遥测和 CloudXR 注入边界。
 
 ## 故障语义
