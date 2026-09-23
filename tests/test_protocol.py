@@ -1,10 +1,15 @@
 from __future__ import annotations
 
 import unittest
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from pydantic import ValidationError
+from fastapi import HTTPException
 
-from server import PoseFrame, app, viewer_app
+from server import PoseFrame, VideoHostRequest, app, viewer_app, get_video_host, set_video_host
+import server
 
 
 def valid_frame_v2() -> dict[str, object]:
@@ -51,6 +56,7 @@ def valid_frame_v5(tracked: bool = True) -> dict[str, object]:
         "yaw_deg": 30.0 if tracked else None,
         "pitch_deg": -20.0 if tracked else None,
     }
+    frame["video_return"] = tracked
     return frame
 
 
@@ -73,6 +79,8 @@ class PoseProtocolTests(unittest.TestCase):
                 ("HEAD", "/openapi.json"),
                 ("GET", "/"),
                 ("GET", "/health"),
+                ("GET", "/api/video-host"),
+                ("PUT", "/api/video-host"),
                 ("GET", "/api/coordinate-transform"),
                 ("PUT", "/api/coordinate-transform"),
                 ("POST", "/api/webrtc/offer"),
@@ -92,6 +100,23 @@ class PoseProtocolTests(unittest.TestCase):
                 ("WS", "/ws/stream"),
             },
         )
+
+    def test_video_host_state_is_local_only(self) -> None:
+        try:
+            local = SimpleNamespace(client=SimpleNamespace(host="127.0.0.1"))
+            remote = SimpleNamespace(client=SimpleNamespace(host="192.168.1.4"))
+            self.assertEqual(
+                asyncio.run(set_video_host(VideoHostRequest(enabled=True), local)),
+                {"enabled": True},
+            )
+            with patch("server.socket.socket") as socket_mock:
+                socket_mock.return_value.__enter__.return_value.connect_ex.return_value = 0
+                self.assertEqual(asyncio.run(get_video_host()), {"enabled": True})
+            with self.assertRaises(HTTPException):
+                asyncio.run(set_video_host(VideoHostRequest(enabled=False), remote))
+            self.assertTrue(server.video_host_override)
+        finally:
+            server.video_host_override = None
 
     def test_pose_v2_accepts_wrist_orientations(self) -> None:
         frame = PoseFrame.model_validate(valid_frame_v2())
@@ -120,6 +145,7 @@ class PoseProtocolTests(unittest.TestCase):
         for tracked in (True, False):
             frame = PoseFrame.model_validate(valid_frame_v5(tracked))
             self.assertEqual(frame.head.tracked, tracked)
+            self.assertEqual(frame.video_return, tracked)
         missing = valid_frame_v5()
         del missing["head"]
         with self.assertRaises(ValidationError):

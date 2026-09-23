@@ -61,5 +61,8 @@ for (const file of ["static/index.html", "cloudxr/qcrt-exporter.js"]) {
   assert.equal(view.getUint8(5), 1 << 6)
   near(view.getFloat32(628, true), 30)
   near(view.getFloat32(632, true), -20)
+  packet.video_return = true
+  const videoView = new DataView(vm.runInContext("encodePosePacket", context)(packet))
+  assert.equal(videoView.getUint8(5), (1 << 6) | (1 << 7))
 }
 console.log("Head angle and packet checks passed")

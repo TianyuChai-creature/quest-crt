@@ -441,6 +441,7 @@ class PoseFrame(BaseModel):
     elbows: PoseJoints
     shoulders: PoseJoints | None = None
     head: PoseHead | None = None
+    video_return: bool | None = None
 
     @model_validator(mode="after")
     def fields_match_protocol_version(self) -> PoseFrame:
@@ -450,6 +451,8 @@ class PoseFrame(BaseModel):
             raise ValueError("pose v2 must not contain shoulders")
         if (self.version == 5) != (self.head is not None):
             raise ValueError("pose v5 requires head; older versions must omit it")
+        if self.version < 5 and self.video_return is not None:
+            raise ValueError("video_return is only available in pose v5")
         expected_reference_space = (
             "spine-upper-scapula" if self.version >= 4 else "local-floor"
         )
@@ -458,6 +461,13 @@ class PoseFrame(BaseModel):
                 f"pose v{self.version} must use reference_space {expected_reference_space!r}"
             )
         return self
+
+
+class VideoHostRequest(BaseModel):
+    enabled: bool | None
+
+
+video_host_override: bool | None = None
 
 
 class WebRTCOffer(BaseModel):
@@ -677,6 +687,8 @@ class PoseStreamProcessor:
             frame_data.pop("shoulders", None)
         if frame_data.get("head") is None:
             frame_data.pop("head", None)
+        if frame_data.get("video_return") is None:
+            frame_data.pop("video_return", None)
         frame_data["ingress_transport"] = self._transport
         frame_data["server_received_epoch_ms"] = server_received_epoch_ms
         frame_data["server_received_monotonic_ms"] = server_received_monotonic_ms
@@ -957,6 +969,8 @@ def make_output_pose(
     output = to_hts_wrist_relative_frame(output)
     if output.get("head") is None:
         output.pop("head", None)
+    if output.get("video_return") is None:
+        output.pop("video_return", None)
     output["coordinate_transform"] = {
         "name": transform_name,
         "source": frame.get("reference_space", "spine-upper-scapula"),
@@ -1094,6 +1108,24 @@ async def index() -> FileResponse:
 @app.get("/health")
 async def health() -> dict[str, Any]:
     return _compose_health()
+
+
+@app.get("/api/video-host")
+async def get_video_host() -> dict[str, bool]:
+    if video_host_override is False:
+        return {"enabled": False}
+    with socket.socket() as sock:
+        sock.settimeout(0.1)
+        return {"enabled": sock.connect_ex(("127.0.0.1", CLOUDXR_CLIENT_PORT)) == 0}
+
+
+@app.put("/api/video-host")
+async def set_video_host(update: VideoHostRequest, request: Request) -> dict[str, bool | None]:
+    if request.client is None or request.client.host not in ("127.0.0.1", "::1"):
+        raise HTTPException(status_code=403, detail="video host state is local-only")
+    global video_host_override
+    video_host_override = update.enabled
+    return {"enabled": update.enabled}
 
 
 @app.post("/api/webrtc/offer")

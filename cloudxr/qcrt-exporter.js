@@ -416,12 +416,21 @@
     const shellError = document.querySelector("#qcrt-shell-error")
     const officialStart = document.querySelector("#startButton")
     const officialRoot = document.getElementById("2d-ui")
+    let pcVideoEnabled = true
+
+    async function syncPcVideo() {
+      try {
+        const response = await fetch(qcrtHttpOrigin + "/api/video-host", { cache: "no-store" })
+        if (response.ok) pcVideoEnabled = Boolean((await response.json()).enabled)
+      } catch {}
+      syncCloudXR()
+    }
 
     function syncCloudXR() {
       const ready = officialStart && !officialStart.disabled
       start.disabled = !ready
       start.textContent = ready ? "开始准备" : "正在检查视频链路…"
-      cloudxrValue.textContent = ready ? "ready" : "checking"
+      cloudxrValue.textContent = pcVideoEnabled ? (ready ? "ready" : "checking") : "PC camera off"
       const error = document.querySelector("#errorMessageText")?.textContent?.trim()
       const validation = document.querySelector("#validationMessageText")?.textContent?.trim()
       shellError.textContent = error || validation || ""
@@ -452,6 +461,8 @@
       })
     }
     syncCloudXR()
+    syncPcVideo()
+    setInterval(syncPcVideo, 1000)
     renderStatus()
   }
 
@@ -808,6 +819,7 @@
     if (packet.shoulders.left.tracked) flags |= 1 << 4
     if (packet.shoulders.right.tracked) flags |= 1 << 5
     if (packet.head.tracked) flags |= 1 << 6
+    if (packet.video_return) flags |= 1 << 7
     view.setUint8(offset++, flags)
     view.setUint16(offset, 0, true)
     offset += 2
@@ -869,6 +881,7 @@
       reference_space: "spine-upper-scapula",
       units: "meters",
       head: readHead(frame, referenceSpace, bodyFrame),
+      video_return: true,
       hands: {
         left: transformHandToBodyFrame(leftHand, bodyFrame),
         right: transformHandToBodyFrame(rightHand, bodyFrame),

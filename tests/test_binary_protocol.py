@@ -61,6 +61,7 @@ def pose_frame_v5(tracked: bool = True) -> dict[str, object]:
         "yaw_deg": 30.0 if tracked else None,
         "pitch_deg": -20.0 if tracked else None,
     }
+    frame["video_return"] = tracked
     return frame
 
 
@@ -106,11 +107,12 @@ class BinaryPoseProtocolTests(unittest.TestCase):
             self.assertEqual(HEAD_PACKET_SIZE, 636)
             self.assertEqual(decoded["version"], 5)
             self.assertEqual(decoded["head"], source["head"])
+            self.assertEqual(decoded["video_return"], tracked)
 
     def test_invalid_size_and_magic_are_rejected(self) -> None:
         packet = encode_pose_packet(pose_frame_v2())
 
-        with self.assertRaisesRegex(ValueError, "604|628"):
+        with self.assertRaisesRegex(ValueError, "604|628|636"):
             decode_pose_packet(packet[:-1])
 
         invalid_magic = bytearray(packet)

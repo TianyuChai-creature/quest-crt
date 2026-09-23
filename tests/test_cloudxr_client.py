@@ -31,6 +31,7 @@ class CloudXRClientTests(unittest.TestCase):
             self.assertLess(generated.index(INJECTION_MARKER), generated.index('src="bundle.js"'))
             self.assertIn("qcrt-entry", generated)
             self.assertIn("qcrt-video-toggle", generated)
+            self.assertIn("PC camera off", generated)
             self.assertIn('panelHiddenAtStart: "true"', generated)
             self.assertEqual((source / "index.html").read_text(encoding="utf-8"), original)
 
@@ -53,6 +54,7 @@ class CloudXRClientTests(unittest.TestCase):
         )
         self.assertIn('<input id="video-mode" type="checkbox" />', index)
         self.assertIn(":48322/client/", index)
+        self.assertIn('fetch("/api/video-host"', index)
         self.assertIn('enterButton.addEventListener("click", enterXR)', index)
 
         launcher = (Path(__file__).parents[1] / "scripts" / "run_cloudxr_zed.sh").read_text(

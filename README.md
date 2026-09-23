@@ -69,7 +69,7 @@ flowchart LR
 **Start prep**。与姿态模式相比，XR 中只增加 ZED 弧面视频层；NVIDIA 控制面板、控制器
 模型、轨迹和录制控件默认隐藏。原始 NVIDIA 页面仍可从 **Advanced settings** 打开。
 
-关闭视频开关会回到姿态模式。
+关闭视频开关会回到姿态模式。与 real-Teleop 工作台配合时，须先在 PC 工作台开启相机，再在 Quest 网页选择 Video return；若 PC 服务未就绪，网页会保留在姿态页并提示先启动。工作台关闭相机后，已打开的 CloudXR 页面仍可上传姿态，界面提示 PC camera off。
 
 ## 快速开始
 
@@ -140,6 +140,7 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 | 8000 | WebRTC `pose` | Quest → PC | XR 帧驱动 | QCRT 636 B |
 | 8000 | `/ws` | Quest → PC 回退 | XR 帧驱动 | Pose JSON |
 | 8000 | `/health` | 运维 | 按需 | JSON |
+| 8000 | `/api/video-host` | Quest 网页 / 本机工作台 | 按需 | PC 视频可用状态；PUT 限本机 |
 | 8000/8001 | `/api/coordinate-transform` | 运维 | 按需 | JSON |
 | 8001 | `/ws` | real-Teleop / Viewer | 事件驱动 latest | JSON |
 | 8001 | `/ws/stream` | DIME | 固定 90 Hz | QSTR v1（二进制默认） |
@@ -148,7 +149,7 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 
 - 当前 636 字节 QCRT 与旧 604/628 字节帧都可解码；
 - Pose v5 增加头部 yaw/pitch；旧 Pose v2–v4 帧仍可接收；
-- `/ws` 输出身体坐标系的 `head: {tracked, yaw_deg, pitch_deg}`，以及 shoulders、elbows、wrist pose 与每手 21 个腕部局部 landmarks；
+- `/ws` 输出身体坐标系的 `head: {tracked, yaw_deg, pitch_deg}` 和 Quest 的 `video_return` 选择状态，以及 shoulders、elbows、wrist pose 与每手 21 个腕部局部 landmarks；
 - `/ws/stream` 继续输出 `quality=ok|held|stale|lost` 的 QSTR v1；
 - `quest_crt` 公共 Python 导出、坐标预设与二进制编解码 API 未改变；
 - WebRTC 不可用时仍自动回退到 WSS，下一次完整会话优先恢复 WebRTC。

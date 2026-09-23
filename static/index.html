@@ -746,6 +746,7 @@
         if (packet.shoulders.left.tracked) flags |= 1 << 4
         if (packet.shoulders.right.tracked) flags |= 1 << 5
         if (packet.head.tracked) flags |= 1 << 6
+        if (packet.video_return) flags |= 1 << 7
         view.setUint8(offset++, flags)
         view.setUint16(offset, 0, true)
         offset += 2
@@ -1300,6 +1301,7 @@
               reference_space: "spine-upper-scapula",
               units: "meters",
               head: readHead(frame, referenceSpace, bodyCoordinateFrame),
+              video_return: false,
               hands: {
                 left: transformHandToBodyFrame(leftHand, bodyCoordinateFrame),
                 right: transformHandToBodyFrame(rightHand, bodyCoordinateFrame),
@@ -1352,8 +1354,17 @@
         }
       }
 
-      videoMode.addEventListener("change", () => {
+      videoMode.addEventListener("change", async () => {
         if (videoMode.checked) {
+          try {
+            const response = await fetch("/api/video-host", { cache: "no-store" })
+            if (!response.ok || !(await response.json()).enabled) throw new Error("PC video off")
+          } catch {
+            videoMode.checked = false
+            xrStatus.textContent = "请先在 PC 工作台开启相机画面"
+            return
+          }
+          if (!videoMode.checked) return
           const videoUrl = new URL(
             `${location.protocol}//${location.hostname}:48322/client/`
           )

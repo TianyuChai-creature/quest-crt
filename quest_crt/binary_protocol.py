@@ -28,6 +28,7 @@ _RIGHT_ELBOW_TRACKED = 1 << 3
 _LEFT_SHOULDER_TRACKED = 1 << 4
 _RIGHT_SHOULDER_TRACKED = 1 << 5
 _HEAD_TRACKED = 1 << 6
+_VIDEO_RETURN = 1 << 7
 
 
 def encode_pose_packet(frame: Mapping[str, Any]) -> bytes:
@@ -84,6 +85,10 @@ def encode_pose_packet(frame: Mapping[str, Any]) -> bytes:
         ):
             raise ValueError("head tracking flag must match both angles")
         flags |= _HEAD_TRACKED if tracked else 0
+        video_return = frame.get("video_return", False)
+        if not isinstance(video_return, bool):
+            raise ValueError("video_return must be boolean")
+        flags |= _VIDEO_RETURN if video_return else 0
 
     packet = bytearray(packet_size)
     _HEADER.pack_into(
@@ -153,7 +158,7 @@ def decode_pose_packet(packet: bytes | bytearray | memoryview) -> dict[str, Any]
         pose_version = 5
         float_count = _HEAD_FLOAT_COUNT
         expected_size = HEAD_PACKET_SIZE
-        allowed_flags = 0x7F
+        allowed_flags = 0xFF
     else:
         raise ValueError(f"unsupported binary pose version {version}")
     if len(view) != expected_size:
@@ -235,6 +240,7 @@ def decode_pose_packet(packet: bytes | bytearray | memoryview) -> dict[str, Any]
             "yaw_deg": None if head_angles is None else head_angles[0],
             "pitch_deg": None if head_angles is None else head_angles[1],
         }
+        result["video_return"] = bool(flags & _VIDEO_RETURN)
     return result
 
 

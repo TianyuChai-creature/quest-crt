@@ -242,6 +242,7 @@ Viewer 直接订阅 `8001/ws`，不读取 `logs/`。打开 Viewer 时如果 Pose
 | 8000 | WebRTC DataChannel | `pose` | 无序、30 ms消息寿命二进制Pose上行 |
 | 8000 | WSS | `/ws` | Quest Pose v5 JSON回退通道；兼容旧v2–v4发送端 |
 | 8000 | HTTPS GET | `/health` | Pose 服务健康检查 |
+| 8000 | HTTPS GET/PUT | `/api/video-host` | PC 视频可用状态；PUT 仅本机 |
 | 8000 | GET/PUT | `/api/coordinate-transform` | 查询或修改 Viewer 输出坐标 |
 | 8001 | HTTPS GET | `/` | PC 端 Viewer |
 | 8001 | WSS | `/ws` | Viewer、质量监视和控制统一的最新帧下游输出 |
@@ -311,7 +312,7 @@ Quest默认通过WebRTC发送固定长度二进制帧；协商失败时向 `8000
 |---:|---:|---|---|
 | 0 | 4 | bytes | ASCII `QCRT` |
 | 4 | 1 | uint8 | 二进制协议版本，当前为4 |
-| 5 | 1 | uint8 | 左手、右手、左肘、右肘、左肩、右肩、head 追踪位 |
+| 5 | 1 | uint8 | 左手、右手、左肘、右肘、左肩、右肩、head 追踪位及 bit7 `video_return` |
 | 6 | 2 | uint16 | 保留，必须为0 |
 | 8 | 4 | uint32 | `seq` |
 | 12 | 8 | float64 | `timestamp_ms` |
@@ -340,6 +341,7 @@ Quest默认通过WebRTC发送固定长度二进制帧；协商失败时向 `8000
 | `elbows` | object | 必须含 `left/right` | 双肘数据 |
 | `shoulders` | object | v3–v5必须含 `left/right` | 双肩数据 |
 | `head` | object | v5 必填；未追踪时角度均为 null | 身体相对 yaw/pitch，单位度 |
+| `video_return` | boolean | v5 可选；当前采集端总是发送 | Quest 是否已选择 CloudXR 视频页 |
 
 `timestamp_ms` **不是 Unix 时间戳，也不是服务端接收时间**，不能直接转换为日期。同一 XR 会话内可以用差值计算帧间隔：
 
