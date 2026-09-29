@@ -15,6 +15,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Literal, TextIO
+from urllib.parse import urlsplit
+from uuid import UUID, uuid4
 
 import uvicorn
 from aiortc import RTCPeerConnection, RTCSessionDescription
@@ -467,7 +469,71 @@ class VideoHostRequest(BaseModel):
     enabled: bool | None
 
 
+class VideoPresenceStart(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session_id: UUID
+
+
+class VideoPresenceRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    lease_id: UUID
+    seq: int = Field(strict=True, ge=1)
+    active: bool = Field(strict=True)
+
+
+class VideoPresence:
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.boot_id = str(uuid4())
+        self._session = self._lease = None
+        self._seq = 0
+        self._active = False
+        self._seen = 0.
+
+    def start(self, session_id: UUID) -> dict:
+        with self._lock:
+            if self._session != session_id or not self._active:
+                self._session, self._lease = session_id, uuid4()
+                self._seq = 0
+            self._active, self._seen = True, time.monotonic()
+            return {'lease_id': str(self._lease), 'boot_id': self.boot_id}
+
+    def update(self, lease_id: UUID, seq: int, active: bool) -> bool:
+        now = time.monotonic()
+        with self._lock:
+            if lease_id != self._lease or seq <= self._seq or not self._active:
+                return False
+            self._seq, self._active, self._seen = seq, active, now
+            return True
+
+    def snapshot(self) -> dict:
+        now = time.monotonic()
+        with self._lock:
+            return {'active': self._active, 'age_ms': (now-self._seen)*1000 if self._active else None,
+                    'boot_id': self.boot_id}
+
+
+class VideoStats(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    framesPerSecond: float | None = None
+    framesReceived: float | None = None
+    framesDecoded: float | None = None
+    framesDropped: float | None = None
+    freezeCount: float | None = None
+    totalFreezesDuration: float | None = None
+    totalDecodeTime: float | None = None
+    jitter: float | None = None
+    jitterBufferDelay: float | None = None
+    jitterBufferEmittedCount: float | None = None
+    packetsLost: float | None = None
+    bytesReceived: float | None = None
+    frameWidth: float | None = None
+    frameHeight: float | None = None
+
+
 video_host_override: bool | None = None
+video_presence = VideoPresence()
 
 
 class WebRTCOffer(BaseModel):
@@ -901,6 +967,8 @@ def _compose_health() -> dict[str, Any]:
             else {"enabled": False}
         ),
     }
+    report['boot_id'] = video_presence.boot_id
+    report['capabilities'] = {'video_presence': 2}
     return report
 
 
@@ -1126,6 +1194,46 @@ async def set_video_host(update: VideoHostRequest, request: Request) -> dict[str
     global video_host_override
     video_host_override = update.enabled
     return {"enabled": update.enabled}
+
+
+def require_cloudxr_origin(request: Request):
+    try:
+        origin = urlsplit(request.headers.get("origin", ""))
+        allowed = (origin.scheme == "https" and origin.hostname is not None
+                   and origin.port == CLOUDXR_CLIENT_PORT and not origin.path
+                   and not origin.query and not origin.fragment and origin.username is None)
+    except ValueError:
+        allowed = False
+    if not allowed:
+        raise HTTPException(status_code=403, detail="CloudXR origin required")
+
+
+@app.post('/api/video-presence/start')
+async def start_video_presence(update: VideoPresenceStart, request: Request) -> dict:
+    require_cloudxr_origin(request)
+    return video_presence.start(update.session_id)
+
+
+@app.post("/api/video-presence")
+async def set_video_presence(update: VideoPresenceRequest, request: Request) -> dict:
+    require_cloudxr_origin(request)
+    return {'accepted': video_presence.update(update.lease_id, update.seq, update.active),
+            'boot_id': video_presence.boot_id}
+
+
+@app.get("/api/video-presence")
+async def get_video_presence(request: Request) -> dict:
+    if request.client is None or request.client.host not in ("127.0.0.1", "::1"):
+        raise HTTPException(status_code=403, detail="video presence is local-only")
+    return video_presence.snapshot()
+
+
+@app.post("/api/video-stats")
+async def record_video_stats(stats: VideoStats) -> dict[str, bool]:
+    # WebRTC durations are seconds; counters are cumulative within a stream.
+    print(f"[video-stats] {datetime.now(timezone.utc).isoformat()} "
+          f"{stats.model_dump_json(exclude_none=True)}", flush=True)
+    return {"ok": True}
 
 
 @app.post("/api/webrtc/offer")

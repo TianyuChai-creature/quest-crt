@@ -1,16 +1,29 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 from scripts.prepare_cloudxr_client import INJECTION_MARKER, prepare_client
-from server import app, ensure_certificate
+from server import app, ensure_certificate, VideoStats, record_video_stats
+from pydantic import ValidationError
 
 
 class CloudXRClientTests(unittest.TestCase):
+    def test_video_stats_are_logged_and_validated(self) -> None:
+        output = io.StringIO()
+        with patch('sys.stdout', output):
+            result = asyncio.run(record_video_stats(VideoStats(framesDropped=3, freezeCount=2)))
+        self.assertEqual(result, {'ok': True})
+        self.assertIn('[video-stats]', output.getvalue())
+        self.assertIn('"framesDropped":3', output.getvalue())
+        for payload in ({'jitter': float('nan')}, {'jitter': float('inf')}, {'unexpected': 1}):
+            with self.assertRaises(ValidationError):
+                VideoStats(**payload)
+
     def test_prepare_injects_before_official_bundle_without_changing_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

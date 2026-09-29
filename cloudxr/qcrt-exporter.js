@@ -7,6 +7,12 @@
   // CloudXR host only serves its fixed three assets. Extract a shared core
   // when NVIDIA exposes a supported client-extension module hook.
   const PRODUCT_DEFAULTS = {
+    // Preserve the original 2048:1792 aspect with SDK-aligned dimensions
+    // (width multiple of 16, height multiple of 64), at 56% of its pixels.
+    // Explicit URL parameters still override this stability preset.
+    perEyeWidth: "1536",
+    perEyeHeight: "1344",
+    maxStreamingBitrateMbps: "25",
     panelHiddenAtStart: "true",
     controllerModelVisibility: "hide",
     showTraceInXR: "false",
@@ -16,6 +22,13 @@
   if (params.get("qcrtUi") !== "nvidia") {
     const productUrl = new URL(location.href)
     let changed = false
+    // Repair the invalid preset already retained in headset page URLs.
+    if (params.get("perEyeWidth") === "1280" && params.get("perEyeHeight") === "1120") {
+      for (const key of ["perEyeWidth", "perEyeHeight"]) {
+        params.delete(key)
+        productUrl.searchParams.delete(key)
+      }
+    }
     for (const [key, value] of Object.entries(PRODUCT_DEFAULTS)) {
       if (params.has(key)) continue
       params.set(key, value)
@@ -58,18 +71,58 @@
   const qcrtHttpOrigin = `${location.protocol}//${qcrtHost}:${qcrtPort}`
   const qcrtWsOrigin = `${location.protocol === "https:" ? "wss" : "ws"}://${qcrtHost}:${qcrtPort}`
 
+  // Observe the SDK's existing stats reads; do not add a polling loop.
+  let lastVideoStatsAt = -Infinity
+  function recordVideoStats(report) {
+    if (performance.now() - lastVideoStatsAt < 5000) return
+    for (const entry of report.values()) {
+      if (entry.type !== "inbound-rtp" || entry.kind !== "video") continue
+      const stats = {}
+      for (const key of ["framesPerSecond", "framesReceived", "framesDecoded", "framesDropped",
+        "freezeCount", "totalFreezesDuration", "totalDecodeTime", "jitter",
+        "jitterBufferDelay", "jitterBufferEmittedCount", "packetsLost", "bytesReceived",
+        "frameWidth", "frameHeight"]) {
+        if (Number.isFinite(entry[key])) stats[key] = entry[key]
+      }
+      lastVideoStatsAt = performance.now()
+      fetch(qcrtHttpOrigin + "/api/video-stats", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(stats), signal: AbortSignal.timeout(2000),
+      }).catch(() => {})
+      break
+    }
+  }
+  for (const prototype of [window.RTCPeerConnection?.prototype, window.RTCRtpReceiver?.prototype]) {
+    if (!prototype?.getStats) continue
+    const original = prototype.getStats
+    prototype.getStats = function (...args) {
+      const result = original.apply(this, args)
+      // Preserve the SDK's return value and rejection behavior.
+      result?.then(recordVideoStats).catch(() => {})
+      return result
+    }
+  }
+
   const state = (window.__qcrt = {
     phase: "waiting-xr",
     transport: "closed",
     sent: 0,
     dropped: 0,
     lastError: null,
+    videoError: null,
   })
   let badge = null
   let shellValues = null
   let activeSession = null
   let referenceSpace = null
   let sessionId = null
+  let presenceSeq = 0
+  let presenceTimer = null
+  let presenceLease = null
+  let presenceBoot = null
+  let presenceGeneration = 0
+  let presencePending = false
+  let presenceSuperseded = false
   let prepDeadlineMs = 0
   let seq = 0
   let peerConnection = null
@@ -77,6 +130,74 @@
   let socket = null
   let reconnectTimer = null
   let connectionAttempt = 0
+
+  async function postPresence(path, body, keepalive = false) {
+    const response = await fetch(qcrtHttpOrigin + path, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body), keepalive,
+      signal: keepalive ? undefined : AbortSignal.timeout(2000),
+    })
+    if (!response.ok) throw new Error("Video lease service unavailable; refresh after upgrading Quest CRT")
+    return response.json()
+  }
+
+  async function sendVideoPresence() {
+    if (!activeSession || presencePending) return
+    const generation = presenceGeneration
+    presencePending = true
+    try {
+      if (!presenceLease) {
+        const lease = await postPresence('/api/video-presence/start', { session_id: sessionId })
+        if (generation !== presenceGeneration || !activeSession) {
+          await postPresence('/api/video-presence', { lease_id: lease.lease_id, seq: 1, active: false }, true)
+          return
+        }
+        presenceLease = lease.lease_id
+        presenceBoot = lease.boot_id
+        presenceSeq = 0
+        setState({ videoError: null })
+      } else {
+        const reply = await postPresence('/api/video-presence', {
+          lease_id: presenceLease, seq: ++presenceSeq, active: true,
+        })
+        if (generation !== presenceGeneration) return
+        if (!reply.accepted) {
+          if (reply.boot_id !== presenceBoot) presenceLease = null
+          else {
+            presenceSuperseded = true
+            clearInterval(presenceTimer)
+            presenceTimer = null
+            setState({ videoError: 'Video session replaced; re-enter XR' })
+          }
+        } else setState({ videoError: null })
+      }
+    } catch (error) {
+      if (generation === presenceGeneration) setState({ videoError: String(error) })
+    } finally {
+      if (generation === presenceGeneration) presencePending = false
+    }
+  }
+
+  function startVideoPresence() {
+    if (presenceSuperseded) return
+    presenceGeneration += 1
+    presenceLease = null
+    presencePending = false
+    clearInterval(presenceTimer)
+    sendVideoPresence()
+    presenceTimer = setInterval(sendVideoPresence, 1000)
+  }
+
+  function stopVideoPresence() {
+    clearInterval(presenceTimer)
+    presenceTimer = null
+    presenceGeneration += 1
+    presencePending = false
+    if (presenceLease) postPresence('/api/video-presence', {
+      lease_id: presenceLease, seq: ++presenceSeq, active: false,
+    }, true).catch(() => {})
+    presenceLease = null
+  }
 
   function renderStatus() {
     if (badge) {
@@ -430,7 +551,7 @@
       const ready = officialStart && !officialStart.disabled
       start.disabled = !ready
       start.textContent = ready ? "开始准备" : "正在检查视频链路…"
-      cloudxrValue.textContent = pcVideoEnabled ? (ready ? "ready" : "checking") : "PC camera off"
+      cloudxrValue.textContent = state.videoError || (pcVideoEnabled ? (ready ? "ready" : "checking") : "PC camera off")
       const error = document.querySelector("#errorMessageText")?.textContent?.trim()
       const validation = document.querySelector("#validationMessageText")?.textContent?.trim()
       shellError.textContent = error || validation || ""
@@ -941,13 +1062,17 @@
     if (activeSession) return
     activeSession = session
     sessionId = crypto.randomUUID()
+    presenceSuperseded = false
+    presenceSeq = 0
     prepDeadlineMs = performance.now() + PREP_COUNTDOWN_MS
     seq = 0
     setState({ phase: "preparing", sent: 0, dropped: 0, lastError: null })
+    startVideoPresence()
     session.addEventListener(
       "end",
       () => {
         if (activeSession !== session) return
+        stopVideoPresence()
         activeSession = null
         referenceSpace = null
         connectionAttempt += 1
@@ -972,4 +1097,10 @@
     if (mode.startsWith("immersive")) attachToSession(session)
     return session
   }
+  window.addEventListener("pagehide", () => {
+    if (activeSession) stopVideoPresence()
+  })
+  window.addEventListener("pageshow", () => {
+    if (activeSession && presenceTimer === null) startVideoPresence()
+  })
 })()

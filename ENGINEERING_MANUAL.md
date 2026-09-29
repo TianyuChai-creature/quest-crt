@@ -341,7 +341,7 @@ Quest默认通过WebRTC发送固定长度二进制帧；协商失败时向 `8000
 | `elbows` | object | 必须含 `left/right` | 双肘数据 |
 | `shoulders` | object | v3–v5必须含 `left/right` | 双肩数据 |
 | `head` | object | v5 必填；未追踪时角度均为 null | 身体相对 yaw/pitch，单位度 |
-| `video_return` | boolean | v5 可选；当前采集端总是发送 | Quest 是否已选择 CloudXR 视频页 |
+| `video_return` | boolean | v5 可选；当前采集端总是发送 | 兼容字段；视频启停改由独立 `/api/video-presence` 心跳控制 |
 
 `timestamp_ms` **不是 Unix 时间戳，也不是服务端接收时间**，不能直接转换为日期。同一 XR 会话内可以用差值计算帧间隔：
 

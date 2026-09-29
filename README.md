@@ -149,7 +149,8 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 
 - 当前 636 字节 QCRT 与旧 604/628 字节帧都可解码；
 - Pose v5 增加头部 yaw/pitch；旧 Pose v2–v4 帧仍可接收；
-- `/ws` 输出身体坐标系的 `head: {tracked, yaw_deg, pitch_deg}` 和 Quest 的 `video_return` 选择状态，以及 shoulders、elbows、wrist pose 与每手 21 个腕部局部 landmarks；
+- `/ws` 输出身体坐标系的 `head: {tracked, yaw_deg, pitch_deg}` 和兼容用 `video_return` 字段，以及 shoulders、elbows、wrist pose 与每手 21 个腕部局部 landmarks；
+- CloudXR XR 会话先 `POST /api/video-presence/start`（session_id UUID）取得 lease_id，随后每秒 `POST /api/video-presence`（lease_id、seq、active）；结束时 active=false。heartbeat 不能创建租约或夺权；本机工作台通过 GET 读取 active/age_ms。health 的 video_presence 能力版本为2，并提供 boot_id；只有服务器重启后自动重新登记，被替换页面需重新进入XR；
 - `/ws/stream` 继续输出 `quality=ok|held|stale|lost` 的 QSTR v1；
 - `quest_crt` 公共 Python 导出、坐标预设与二进制编解码 API 未改变；
 - WebRTC 不可用时仍自动回退到 WSS，下一次完整会话优先恢复 WebRTC。
