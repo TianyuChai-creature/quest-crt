@@ -113,9 +113,18 @@ class PoseProtocolTests(unittest.TestCase):
                 asyncio.run(set_video_host(VideoHostRequest(enabled=True), local)),
                 {"enabled": True},
             )
-            with patch("server.socket.socket") as socket_mock:
-                socket_mock.return_value.__enter__.return_value.connect_ex.return_value = 0
-                self.assertEqual(asyncio.run(get_video_host()), {"enabled": True})
+            async def check_host():
+                # Start asyncio's real event loop before mocking probe sockets.
+                with patch("server.socket.socket") as socket_mock:
+                    probe = socket_mock.return_value.__enter__.return_value
+                    probe.connect_ex.return_value = 0
+                    self.assertEqual(await get_video_host(), {"enabled": True})
+                    self.assertEqual(socket_mock.call_count, 1)
+                    probe.connect_ex.assert_called_once_with(
+                        ("127.0.0.1", server.CLOUDXR_CLIENT_PORT)
+                    )
+
+            asyncio.run(check_host())
             with self.assertRaises(HTTPException):
                 asyncio.run(set_video_host(VideoHostRequest(enabled=False), remote))
             self.assertTrue(server.video_host_override)
