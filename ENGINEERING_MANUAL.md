@@ -19,7 +19,7 @@ Y 上、Z 右的右手人体坐标，单位为米；腕部四元数同步换基�
 ```text
 Quest Browser
   │  HTTPS: 采集页面
-  │  WebRTC DataChannel: 636字节、30ms寿命二进制Pose（无线主通道）
+  │  WebRTC DataChannel: 804字节、30ms寿命二进制Pose（含关节半径，无线主通道）
   │  WSS /ws: Pose v5 JSON（自动回退）
   ▼
 8000 / Pose 服务 ──── 后台线程写入 logs/*.jsonl（原始上背部人体坐标）
@@ -306,12 +306,12 @@ Quest默认通过WebRTC发送固定长度二进制帧；协商失败时向 `8000
 交给协议栈后的有效传输时间。SDP通过同源HTTPS
 `POST /api/webrtc/offer` 交换；局域网路径默认不配置外部STUN/TURN。
 
-当前采集页每包固定636字节，所有多字节数值使用little-endian：
+当前采集页每包固定804字节，所有多字节数值使用little-endian：
 
 | 偏移 | 长度 | 类型 | 内容 |
 |---:|---:|---|---|
 | 0 | 4 | bytes | ASCII `QCRT` |
-| 4 | 1 | uint8 | 二进制协议版本，当前为4 |
+| 4 | 1 | uint8 | 二进制协议版本，当前为5 |
 | 5 | 1 | uint8 | 左手、右手、左肘、右肘、左肩、右肩、head 追踪位及 bit7 `video_return` |
 | 6 | 2 | uint16 | 保留，必须为0 |
 | 8 | 4 | uint32 | `seq` |
@@ -319,11 +319,14 @@ Quest默认通过WebRTC发送固定长度二进制帧；协商失败时向 `8000
 | 20 | 8 | float64 | `capture_epoch_ms` |
 | 28 | 16 | bytes | `session_id` UUID |
 | 44 | 592 | 148×float32 | 位置、腕部四元数与头部角度 |
+| 636 | 168 | 42×float32 | 左手21项半径、右手21项半径（米）；单项NaN表示未知 |
 
 148个float32的顺序为：左手21×XYZ、右手21×XYZ、左腕XYZW四元数、右腕XYZW
 四元数、左肘XYZ、右肘XYZ、左肩XYZ、右肩XYZ、head yaw/pitch（度）。不可用向量的
 全部分量写为NaN；混合有限值与NaN会被服务端拒绝。服务端解码后重建Pose v5对象。
-旧二进制版本3/2的628字节帧和版本1的604字节帧仍可解码。
+半径必须为有限非负数或未知；与每手21点同序。JSON Pose版本仍为5，增加可选的
+`hands.left/right.radii`，有值时必须为21项。半径已知时对应关节点必须有位置。
+旧二进制版本4的636字节帧、版本3/2的628字节帧和版本1的604字节帧仍可解码。
 
 ### 7.2 顶层字段
 
@@ -666,6 +669,18 @@ wss://<PC-IP>:8001/ws
 
 实际 `landmarks` 始终包含 21 项。左右手分别以自己的腕部为原点：
 
+每手输出还包含 `radii`，21项与 `landmarks` 同序，单位米，缺失为 `null`。半径由
+WebXR `getJointPose().radius` 获取，坐标轴变换或腕部局部变换不改变其值。
+它是关节中心到近似皮肤表面的球半径，运行时可能模拟该值；不代表实际接触面积。
+旧发送端的每手半径输出为21个 `null`。
+
+默认 QSTR v1 不改变字节格式，也不包含半径。用 `/ws/stream?version=2` 获取 QSTR v2，
+或用 `/ws/stream?format=json` 获取完整 JSON 信封。QSTR v2 保持52字节头与原有手肘体，
+在有姿态时追加42×float32半径（左21、右21）；无姿态的lost帧仍只有头。
+Python `decode_stream_envelope` 自动识别两版，`encode_stream_envelope(..., version=2)`
+显式编码v2；`stream_packet_size_for(..., version=2)` 返回对应大小。
+服务默认 UDP 仍为v1；自行调用 `UdpStreamPublisher(bus, version=2)` 可转发v2。
+
 ```text
 p_local = inverse(R_wrist) × (p_reference - t_wrist)
 p_reference = R_wrist × p_local + t_wrist
@@ -977,7 +992,7 @@ uv run python -m unittest discover -s tests -v
 - Pose 帧坐标转换与输入不变性；
 - 腕部局部坐标转换、参考坐标重建和换基后姿态一致性；
 - Pose v5头部角度、Pose v4人体参考空间、Pose v3肩部兼容、Pose v2兼容和旧协议版本拒绝；
-- 二进制v4/v3/v2/v1姿态编解码、636/628/604字节兼容、空值表示和非法数据拒绝；
+- 二进制v5/v4/v3/v2/v1姿态编解码、804/636/628/604字节兼容、半径空值与非法数据拒绝；
 - 跨线程通知唤醒 Viewer 订阅者。
 - latest-only 入口覆盖、无序二进制包最大序号保留和异步日志写入。
 

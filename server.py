@@ -14,7 +14,7 @@ from collections import deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal, TextIO
+from typing import Annotated, Any, Callable, Literal, TextIO
 from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
@@ -45,14 +45,14 @@ from quest_crt.telemetry import IngressTelemetry, StatusReporter, build_health_r
 ROOT = Path(__file__).resolve().parent
 INDEX_HTML = ROOT / "static" / "index.html"
 VIEWER_HTML = ROOT / "static" / "viewer.html"
-CERT_DIR = ROOT / "certs"
+CERT_DIR = Path.cwd() / "certs"
 POSE_CERT_FILE = os.environ.get("POSE_CERT_FILE")
 POSE_KEY_FILE = os.environ.get("POSE_KEY_FILE")
 if bool(POSE_CERT_FILE) != bool(POSE_KEY_FILE):
     raise RuntimeError("POSE_CERT_FILE and POSE_KEY_FILE must be set together")
 CERT_FILE = Path(POSE_CERT_FILE) if POSE_CERT_FILE else CERT_DIR / "cert.pem"
 KEY_FILE = Path(POSE_KEY_FILE) if POSE_KEY_FILE else CERT_DIR / "key.pem"
-LOG_DIR = ROOT / "logs"
+LOG_DIR = Path.cwd() / "logs"
 
 HOST = os.environ.get("POSE_HOST", "0.0.0.0")
 PORT = int(os.environ.get("POSE_PORT", "8000"))
@@ -357,9 +357,17 @@ class PoseHand(BaseModel):
     tracked: bool
     points: list[PosePoint | None] = Field(min_length=21, max_length=21)
     wrist_orientation: PoseQuaternion | None
+    radii: list[Annotated[float, Field(ge=0, allow_inf_nan=False)] | None] | None = Field(
+        default=None, min_length=21, max_length=21
+    )
 
     @model_validator(mode="after")
     def tracked_requires_all_pose_data(self) -> PoseHand:
+        if self.radii is not None and any(
+            radius is not None and point is None
+            for point, radius in zip(self.points, self.radii)
+        ):
+            raise ValueError("joint radius requires a joint position")
         if self.tracked and any(point is None for point in self.points):
             raise ValueError("tracked hand must contain all 21 points")
         if self.tracked and self.wrist_orientation is None:
@@ -968,7 +976,7 @@ def _compose_health() -> dict[str, Any]:
         ),
     }
     report['boot_id'] = video_presence.boot_id
-    report['capabilities'] = {'video_presence': 2}
+    report['capabilities'] = {'video_presence': 2, 'joint_radii': True, 'qstr_versions': [1, 2]}
     return report
 
 
@@ -1362,6 +1370,7 @@ async def stable_stream_websocket(websocket: WebSocket) -> None:
 
     Default wire format is versioned **binary** (magic QSTR). Override with
     query ``?format=json`` or env ``STREAM_WS_FORMAT=json``.
+    Query ``?version=2`` includes joint radii; the binary default stays v1.
     Per-subscriber queue capacity is 1 (latest-only backpressure).
     """
     await websocket.accept()
@@ -1370,6 +1379,10 @@ async def stable_stream_websocket(websocket: WebSocket) -> None:
     fmt = (websocket.query_params.get("format") or STREAM_WS_FORMAT).strip().lower()
     if fmt not in ("binary", "json"):
         fmt = "binary"
+    version = websocket.query_params.get("version", "1")
+    if fmt == "binary" and version not in ("1", "2"):
+        await websocket.close(code=1008, reason="binary version must be 1 or 2")
+        return
     sub_q = stream_clock.bus.subscribe()
     print(
         f"Stable stream connected: {client_name} format={fmt} "
@@ -1394,7 +1407,7 @@ async def stable_stream_websocket(websocket: WebSocket) -> None:
                     )
                 )
             else:
-                await websocket.send_bytes(encode_stream_envelope(envelope))
+                await websocket.send_bytes(encode_stream_envelope(envelope, version=int(version)))
     except WebSocketDisconnect as exc:
         print(
             f"Stable stream disconnected: {client_name} "

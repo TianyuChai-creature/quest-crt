@@ -9,7 +9,7 @@ WebXR 会话中附加 ZED Mini → Televiz → CloudXR 视频；视频故障不�
 
 | 能力 | 默认 | 稳定契约 |
 |---|---:|---|
-| 人体姿态上行 | 开启 | QCRT 636 B WebRTC；WSS JSON 回退 |
+| 人体姿态上行 | 开启 | QCRT 804 B（含关节半径）WebRTC；WSS JSON 回退 |
 | real-Teleop 输出 | 开启 | `:8001/ws`，事件驱动 JSON |
 | DIME 传感流 | 开启 | `:8001/ws/stream`，90 Hz QSTR v1 |
 | ZED 视频回传 | **关闭** | 每眼 1280×720 @ 60 FPS，CloudXR |
@@ -92,6 +92,17 @@ uv sync
 uv run python server.py
 ```
 
+也可以安装 [v0.2.0 wheel](https://github.com/TianyuChai-creature/quest-crt/releases/tag/v0.2.0)，无需克隆仓库：
+
+```bash
+uv venv --python 3.13 .venv
+uv pip install --python .venv/bin/python quest_crt-0.2.0-py3-none-any.whl
+.venv/bin/quest-crt
+```
+
+wheel 包含姿态服务和两张网页；证书、姿态及视频统计日志保存在启动目录的 `certs/`、`logs/`。
+可用 `uv build --wheel` 从本仓库复现构建，产物位于 `dist/`。CloudXR 视频组件仍需单独准备。
+
 终端会打印局域网地址：
 
 ```text
@@ -137,7 +148,7 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 | 端口 | 路径 | 消费方 | 节奏 | 格式 |
 |---:|---|---|---|---|
 | 8000 | `/api/webrtc/offer` | Quest | 会话协商 | SDP JSON |
-| 8000 | WebRTC `pose` | Quest → PC | XR 帧驱动 | QCRT 636 B |
+| 8000 | WebRTC `pose` | Quest → PC | XR 帧驱动 | QCRT 804 B |
 | 8000 | `/ws` | Quest → PC 回退 | XR 帧驱动 | Pose JSON |
 | 8000 | `/health` | 运维 | 按需 | JSON |
 | 8000 | `/api/video-host` | Quest 网页 / 本机工作台 | 按需 | PC 视频可用状态；PUT 限本机 |
@@ -147,11 +158,12 @@ CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
 
 兼容保证：
 
-- 当前 636 字节 QCRT 与旧 604/628 字节帧都可解码；
+- 当前 804 字节 QCRT 与旧 604/628/636 字节帧都可解码；
 - Pose v5 增加头部 yaw/pitch；旧 Pose v2–v4 帧仍可接收；
 - `/ws` 输出身体坐标系的 `head: {tracked, yaw_deg, pitch_deg}` 和兼容用 `video_return` 字段，以及 shoulders、elbows、wrist pose 与每手 21 个腕部局部 landmarks；
 - CloudXR XR 会话先 `POST /api/video-presence/start`（session_id UUID）取得 lease_id，随后每秒 `POST /api/video-presence`（lease_id、seq、active）；结束时 active=false。heartbeat 不能创建租约或夺权；本机工作台通过 GET 读取 active/age_ms。health 的 video_presence 能力版本为2，并提供 boot_id；只有服务器重启后自动重新登记，被替换页面需重新进入XR；
 - `/ws/stream` 继续输出 `quality=ok|held|stale|lost` 的 QSTR v1；
+- `/ws/stream?version=2` 输出带关节半径的 QSTR v2，Python `decode_stream_envelope` 可解两版；
 - `quest_crt` 公共 Python 导出、坐标预设与二进制编解码 API 未改变；
 - WebRTC 不可用时仍自动回退到 WSS，下一次完整会话优先恢复 WebRTC。
 
@@ -167,6 +179,26 @@ X = 前    Y = 上    Z = 右    单位 = 米
 人体坐标中。头部 yaw 向右为正、pitch 向上为正，均以身体坐标为准，不随 Viewer 坐标预设变化。详细数学定义与字段表见
 [`ENGINEERING_MANUAL.md`](ENGINEERING_MANUAL.md)。
 
+### 关节半径
+
+原始帧、JSONL、`/ws` 和 `/ws/stream?format=json` 的每手对象增加 `radii`，与该手
+21 点的 `points`／`landmarks` 顺序相同。值为米，缺失为 `null`；坐标转换不改变半径。
+例如 `hands.right.radii[8]` 是食指尖半径。旧发送端的输出半径均为 `null`。
+
+```python
+from quest_crt import decode_stream_envelope
+
+envelope = decode_stream_envelope(packet)  # packet 来自 /ws/stream?version=2
+if envelope["pose"] is not None:
+    hand = envelope["pose"]["hands"]["right"]
+    radius_m = hand["radii"][8]  # 判断 quality、tracked 与 None 后再使用
+```
+
+默认 QSTR v1／UDP 保持旧字节格式，不含半径；编码 v2 使用
+`encode_stream_envelope(envelope, version=2)`，自行构造 UDP 转发器时使用
+`UdpStreamPublisher(bus, version=2)`。半径由 WebXR `getJointPose().radius` 获取，是
+关节中心近似球体的皮肤半径，可能由运行时模拟，不是实际接触面积或位置误差。
+
 ## 检查与测试
 
 Quest 已传数时：
@@ -181,11 +213,14 @@ uv run python scripts/check_runtime_contracts.py --live
 
 完整测试：
 
+浏览器采集测试需要 Node.js。
+
 ```bash
 PYTHONPATH=. python -m unittest discover -s tests -v
+for test_file in tests/*.cjs; do node "$test_file"; done
 ```
 
-测试固定了原有 HTTP/WSS 路由、604/628/636 字节 QCRT、QSTR、坐标变换、latest-only、日志
+测试固定了原有 HTTP/WSS 路由、604/628/636/804 字节 QCRT、QSTR v1/v2、半径空值与校验、坐标变换、latest-only、日志
 轮转、遥测和 CloudXR 注入边界。
 
 ## 故障语义

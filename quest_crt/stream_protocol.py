@@ -2,7 +2,10 @@
 
 Packet layout (little-endian), magic ``QSTR``:
 
-Header (48 bytes)::
+Version 2 appends 42 float32 joint radii (left 21, right 21) after the
+optional elbows when a pose is present. Version 1 remains the default.
+
+Header (52 bytes)::
 
     4s magic      b"QSTR"
     B  version   1
@@ -41,9 +44,11 @@ from collections.abc import Mapping, Sequence
 from typing import Any
 
 from quest_crt.stable_stream import Quality, StreamEnvelope
+from quest_crt.joint_radii import decode_joint_radii, encode_joint_radii
 
 STREAM_MAGIC = b"QSTR"
 STREAM_VERSION = 1
+RADII_STREAM_VERSION = 2
 
 _QUALITY_TO_U8: dict[str, int] = {"ok": 0, "held": 1, "stale": 2, "lost": 3}
 _U8_TO_QUALITY: dict[int, Quality] = {v: k for k, v in _QUALITY_TO_U8.items()}  # type: ignore[misc]
@@ -132,8 +137,12 @@ def _decode_hand(tracked: bool, floats: Sequence[float]) -> dict[str, Any]:
     }
 
 
-def encode_stream_envelope(envelope: StreamEnvelope | Mapping[str, Any]) -> bytes:
+def encode_stream_envelope(
+    envelope: StreamEnvelope | Mapping[str, Any], *, version: int = STREAM_VERSION
+) -> bytes:
     """Encode one StreamEnvelope to versioned binary."""
+    if version not in (STREAM_VERSION, RADII_STREAM_VERSION):
+        raise ValueError(f"unsupported stream version {version}")
     if isinstance(envelope, StreamEnvelope):
         d = envelope.to_dict()
     else:
@@ -169,6 +178,11 @@ def encode_stream_envelope(envelope: StreamEnvelope | Mapping[str, Any]) -> byte
             body.extend(struct.pack(f"<{_ELBOW_FLOATS}f", *ef))
         ct = pose.get("coordinate_transform") or {}
         transform_name = str(ct.get("name") or "")
+        if version == RADII_STREAM_VERSION:
+            radii = []
+            for side in ("left", "right"):
+                radii.extend(encode_joint_radii((hands.get(side) or {}).get("radii")))
+            body.extend(struct.pack("<42f", *radii))
 
     age = d.get("capture_age_ms")
     age_f = float("nan") if age is None else float(age)
@@ -177,7 +191,7 @@ def encode_stream_envelope(envelope: StreamEnvelope | Mapping[str, Any]) -> byte
 
     header = _HEADER.pack(
         STREAM_MAGIC,
-        STREAM_VERSION,
+        version,
         _QUALITY_TO_U8[quality],
         flags,
         0,
@@ -215,7 +229,7 @@ def decode_stream_envelope(packet: bytes | bytearray | memoryview) -> dict[str, 
 
     if magic != STREAM_MAGIC:
         raise ValueError("invalid stream magic")
-    if version != STREAM_VERSION:
+    if version not in (STREAM_VERSION, RADII_STREAM_VERSION):
         raise ValueError(f"unsupported stream version {version}")
     if reserved != 0:
         raise ValueError("stream reserved must be 0")
@@ -262,6 +276,13 @@ def decode_stream_envelope(packet: bytes | bytearray | memoryview) -> dict[str, 
 
             pose["elbows"] = {"left": elbow(0), "right": elbow(1)}
 
+    if pose is not None and version == RADII_STREAM_VERSION:
+        if len(view) != offset + 42 * 4:
+            raise ValueError("stream packet has invalid joint radii size")
+        radii = struct.unpack_from("<42f", view, offset)
+        for index, side in enumerate(("left", "right")):
+            pose["hands"][side]["radii"] = decode_joint_radii(radii[index * 21:(index + 1) * 21])
+
     if flags & ~(_FLAG_POSE | _FLAG_ELBOWS):
         raise ValueError("stream packet has unknown flags")
 
@@ -278,6 +299,8 @@ def decode_stream_envelope(packet: bytes | bytearray | memoryview) -> dict[str, 
     }
 
 
-def stream_packet_size_for(envelope: StreamEnvelope | Mapping[str, Any]) -> int:
+def stream_packet_size_for(
+    envelope: StreamEnvelope | Mapping[str, Any], *, version: int = STREAM_VERSION
+) -> int:
     """Return encoded size without allocating (for tests/docs)."""
-    return len(encode_stream_envelope(envelope))
+    return len(encode_stream_envelope(envelope, version=version))

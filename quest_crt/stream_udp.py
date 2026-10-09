@@ -22,7 +22,11 @@ class UdpStreamPublisher:
         *,
         host: str = "127.0.0.1",
         port: int = 9100,
+        version: int = 1,
     ) -> None:
+        if version not in (1, 2):
+            raise ValueError("UDP stream version must be 1 or 2")
+        self.version = version
         self._bus = bus
         self.host = str(host)
         self.port = int(port)
@@ -56,6 +60,7 @@ class UdpStreamPublisher:
             "enabled": True,
             "host": self.host,
             "port": self.port,
+            "version": self.version,
             "sent": self._sent,
             "errors": self._errors,
         }
@@ -76,7 +81,7 @@ class UdpStreamPublisher:
                 except queue.Empty:
                     continue
                 try:
-                    packet = encode_stream_envelope(envelope)
+                    packet = encode_stream_envelope(envelope, version=self.version)
                     sock.sendto(packet, addr)
                     self._sent += 1
                 except Exception:

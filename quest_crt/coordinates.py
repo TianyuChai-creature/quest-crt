@@ -296,6 +296,7 @@ def to_hts_wrist_relative_frame(frame: Mapping[str, Any]) -> dict[str, Any]:
                 "orientation": wrist_orientation,
             },
             "landmarks": landmarks,
+            "radii": source_hand.get("radii") or [None] * 21,
         }
     return result
 

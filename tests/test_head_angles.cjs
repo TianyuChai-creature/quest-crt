@@ -12,7 +12,7 @@ for (const file of ["static/index.html", "cloudxr/qcrt-exporter.js"]) {
     assert(left >= 0 && right > left, file + ": missing function")
     return source.slice(left, right)
   }
-  const context = vm.createContext({ BODY_FRAME_EPSILON: 1e-6, BINARY_PACKET_SIZE: 636, Math, Number })
+  const context = vm.createContext({ BODY_FRAME_EPSILON: 1e-6, BINARY_PACKET_SIZE: 804, Math, Number })
   vm.runInContext(
     between("dotVectors", "crossVectors") +
     between("quaternionToMatrix", "multiplyMatrix3") +
@@ -56,8 +56,8 @@ for (const file of ["static/index.html", "cloudxr/qcrt-exporter.js"]) {
   }
   const bytes = vm.runInContext("encodePosePacket", context)(packet)
   const view = new DataView(bytes)
-  assert.equal(bytes.byteLength, 636)
-  assert.equal(view.getUint8(4), 4)
+  assert.equal(bytes.byteLength, 804)
+  assert.equal(view.getUint8(4), 5)
   assert.equal(view.getUint8(5), 1 << 6)
   near(view.getFloat32(628, true), 30)
   near(view.getFloat32(632, true), -20)

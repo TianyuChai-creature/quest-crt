@@ -8,18 +8,23 @@ import uuid
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from quest_crt.joint_radii import decode_joint_radii, encode_joint_radii
+
 MAGIC = b"QCRT"
 LEGACY_BINARY_VERSION = 1
 SHOULDER_BINARY_VERSION = 2
 BINARY_VERSION = 3
 HEAD_BINARY_VERSION = 4
+RADII_BINARY_VERSION = 5
 _HEADER = struct.Struct("<4sBBHIdd16s")
 _LEGACY_FLOAT_COUNT = 140
 _FLOAT_COUNT = 146
 _HEAD_FLOAT_COUNT = 148
+_RADII_FLOAT_COUNT = _HEAD_FLOAT_COUNT + 42
 LEGACY_PACKET_SIZE = _HEADER.size + _LEGACY_FLOAT_COUNT * 4
 PACKET_SIZE = _HEADER.size + _FLOAT_COUNT * 4
 HEAD_PACKET_SIZE = _HEADER.size + _HEAD_FLOAT_COUNT * 4
+RADII_PACKET_SIZE = _HEADER.size + _RADII_FLOAT_COUNT * 4
 
 _LEFT_HAND_TRACKED = 1 << 0
 _RIGHT_HAND_TRACKED = 1 << 1
@@ -64,6 +69,14 @@ def encode_pose_packet(frame: Mapping[str, Any]) -> bytes:
     right_hand = hands["right"]
     left_elbow = elbows["left"]
     right_elbow = elbows["right"]
+
+    has_radii = any(hand.get("radii") is not None for hand in (left_hand, right_hand))
+    if has_radii:
+        if pose_version != 5:
+            raise ValueError("binary joint radii require pose v5")
+        binary_version = RADII_BINARY_VERSION
+        float_count = _RADII_FLOAT_COUNT
+        packet_size = RADII_PACKET_SIZE
 
     flags = 0
     flags |= _LEFT_HAND_TRACKED if left_hand["tracked"] else 0
@@ -119,6 +132,9 @@ def encode_pose_packet(frame: Mapping[str, Any]) -> bytes:
         values.extend(_encode_vector(
             [head["yaw_deg"], head["pitch_deg"]] if head["tracked"] else None, 2
         ))
+    if has_radii:
+        for hand in (left_hand, right_hand):
+            values.extend(encode_joint_radii(hand.get("radii")))
 
     if len(values) != float_count:
         raise ValueError(f"binary pose payload must contain {float_count} float values")
@@ -131,7 +147,7 @@ def decode_pose_packet(packet: bytes | bytearray | memoryview) -> dict[str, Any]
     view = memoryview(packet)
     if len(view) < _HEADER.size:
         raise ValueError(
-            f"binary pose packet must be exactly {LEGACY_PACKET_SIZE}, {PACKET_SIZE}, or {HEAD_PACKET_SIZE} bytes"
+            f"binary pose packet must be exactly {LEGACY_PACKET_SIZE}, {PACKET_SIZE}, {HEAD_PACKET_SIZE}, or {RADII_PACKET_SIZE} bytes"
         )
 
     magic, version, flags, reserved, seq, timestamp_ms, capture_epoch_ms, session_bytes = (
@@ -158,6 +174,11 @@ def decode_pose_packet(packet: bytes | bytearray | memoryview) -> dict[str, Any]
         pose_version = 5
         float_count = _HEAD_FLOAT_COUNT
         expected_size = HEAD_PACKET_SIZE
+        allowed_flags = 0xFF
+    elif version == RADII_BINARY_VERSION:
+        pose_version = 5
+        float_count = _RADII_FLOAT_COUNT
+        expected_size = RADII_PACKET_SIZE
         allowed_flags = 0xFF
     else:
         raise ValueError(f"unsupported binary pose version {version}")
@@ -241,6 +262,10 @@ def decode_pose_packet(packet: bytes | bytearray | memoryview) -> dict[str, Any]
             "pitch_deg": None if head_angles is None else head_angles[1],
         }
         result["video_return"] = bool(flags & _VIDEO_RETURN)
+    if version == RADII_BINARY_VERSION:
+        for side in ("left", "right"):
+            result["hands"][side]["radii"] = decode_joint_radii(values[offset:offset + 21])
+            offset += 21
     return result
 
 

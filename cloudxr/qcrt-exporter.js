@@ -61,7 +61,7 @@
     "pinky-finger-phalanx-distal",
     "pinky-finger-tip",
   ]
-  const BINARY_PACKET_SIZE = 636
+  const BINARY_PACKET_SIZE = 804
   const BODY_FRAME_EPSILON = 1e-6
   const RTC_PACKET_LIFETIME_MS = 30
   const WS_MAX_BUFFERED_BYTES = 16 * 1024
@@ -743,15 +743,18 @@
     }
   }
 
-  function readPose(frame, space) {
+  function readPose(frame, space, joint = false) {
     if (!space || !referenceSpace) return null
     try {
-      const pose = frame.getPose(space, referenceSpace)
+      const pose = joint && typeof frame.getJointPose === "function"
+        ? frame.getJointPose(space, referenceSpace)
+        : frame.getPose(space, referenceSpace)
       if (!pose) return null
       const { x, y, z } = pose.transform.position
       const orientation = pose.transform.orientation
       return {
         position: [x, y, z],
+        radius: Number.isFinite(pose.radius) && pose.radius >= 0 ? pose.radius : null,
         orientation: [orientation.x, orientation.y, orientation.z, orientation.w],
       }
     } catch {
@@ -768,15 +771,18 @@
       return {
         tracked: false,
         points: HAND_JOINTS.map(() => null),
+        radii: HAND_JOINTS.map(() => null),
         wrist_orientation: null,
       }
     }
-    const poses = HAND_JOINTS.map((jointName) => readPose(frame, source.hand.get(jointName)))
+    const poses = HAND_JOINTS.map((jointName) => readPose(frame, source.hand.get(jointName), true))
     const points = poses.map((pose) => pose?.position ?? null)
+    const radii = poses.map((pose) => pose?.radius ?? null)
     const wristOrientation = poses[0]?.orientation ?? null
     return {
       tracked: wristOrientation !== null && points.every((point) => point !== null),
       points,
+      radii,
       wrist_orientation: wristOrientation,
     }
   }
@@ -921,6 +927,7 @@
   function transformHandToBodyFrame(hand, bodyFrame) {
     return {
       tracked: hand.tracked,
+      radii: hand.radii,
       points: hand.points.map((point) => transformPointToBodyFrame(point, bodyFrame)),
       wrist_orientation: transformOrientationToBodyFrame(hand.wrist_orientation, bodyFrame),
     }
@@ -931,7 +938,7 @@
     const view = new DataView(buffer)
     let offset = 0
     for (const byte of [0x51, 0x43, 0x52, 0x54]) view.setUint8(offset++, byte)
-    view.setUint8(offset++, 4)
+    view.setUint8(offset++, 5)
     let flags = 0
     if (packet.hands.left.tracked) flags |= 1 << 0
     if (packet.hands.right.tracked) flags |= 1 << 1
@@ -971,6 +978,7 @@
     writeVector(packet.shoulders.left.position, 3)
     writeVector(packet.shoulders.right.position, 3)
     writeVector(packet.head.tracked ? [packet.head.yaw_deg, packet.head.pitch_deg] : null, 2)
+    for (const hand of [packet.hands.left, packet.hands.right]) writeVector(hand.radii, 21)
     if (offset !== BINARY_PACKET_SIZE) throw new Error(`binary pose size mismatch: ${offset}`)
     return buffer
   }
