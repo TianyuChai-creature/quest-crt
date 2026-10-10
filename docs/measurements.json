@@ -1,0 +1,212 @@
+{
+  "baseline": "124ae02b697fff4cf8ca45038f19f8efc595a639",
+  "method": {
+    "python": "3.13.8",
+    "rounds": 3,
+    "warmup_per_case": 100,
+    "samples_per_case": 600,
+    "frame_bytes": 804,
+    "frame": "synthetic complete tracked hands with 21 points and radii per hand, identity wrist orientations, head/shoulders/elbows present",
+    "scope": "local decode/validation and transformed JSON construction only; no socket/GPU/Quest latency; alternating run order; GC disabled during timed samples",
+    "aggregation": "median of three per-round medians and median of three per-round p95 values"
+  },
+  "rounds": [
+    {
+      "variant": "main",
+      "decode_validate": {
+        "median_us": 56.991,
+        "p95_us": 64.115
+      },
+      "output_consumers": {
+        "1": {
+          "median_us": 331.26,
+          "p95_us": 349.069
+        },
+        "2": {
+          "median_us": 674.393,
+          "p95_us": 726.635
+        },
+        "4": {
+          "median_us": 1334.539,
+          "p95_us": 1429.524
+        }
+      },
+      "round": 1
+    },
+    {
+      "variant": "current",
+      "decode_validate": {
+        "median_us": 54.617,
+        "p95_us": 66.49
+      },
+      "output_consumers": {
+        "1": {
+          "median_us": 341.946,
+          "p95_us": 366.88
+        },
+        "2": {
+          "median_us": 343.133,
+          "p95_us": 365.692
+        },
+        "4": {
+          "median_us": 344.32,
+          "p95_us": 365.692
+        }
+      },
+      "round": 1
+    },
+    {
+      "variant": "current",
+      "decode_validate": {
+        "median_us": 54.616,
+        "p95_us": 59.366
+      },
+      "output_consumers": {
+        "1": {
+          "median_us": 339.571,
+          "p95_us": 353.819
+        },
+        "2": {
+          "median_us": 341.946,
+          "p95_us": 355.007
+        },
+        "4": {
+          "median_us": 343.133,
+          "p95_us": 355.007
+        }
+      },
+      "round": 2
+    },
+    {
+      "variant": "main",
+      "decode_validate": {
+        "median_us": 58.178,
+        "p95_us": 64.115
+      },
+      "output_consumers": {
+        "1": {
+          "median_us": 340.759,
+          "p95_us": 356.194
+        },
+        "2": {
+          "median_us": 674.393,
+          "p95_us": 753.943
+        },
+        "4": {
+          "median_us": 1342.85,
+          "p95_us": 1403.403
+        }
+      },
+      "round": 2
+    },
+    {
+      "variant": "main",
+      "decode_validate": {
+        "median_us": 56.991,
+        "p95_us": 62.928
+      },
+      "output_consumers": {
+        "1": {
+          "median_us": 331.85400000000004,
+          "p95_us": 346.695
+        },
+        "2": {
+          "median_us": 663.707,
+          "p95_us": 677.956
+        },
+        "4": {
+          "median_us": 1307.231,
+          "p95_us": 1338.101
+        }
+      },
+      "round": 3
+    },
+    {
+      "variant": "current",
+      "decode_validate": {
+        "median_us": 54.617,
+        "p95_us": 61.741
+      },
+      "output_consumers": {
+        "1": {
+          "median_us": 345.508,
+          "p95_us": 379.94
+        },
+        "2": {
+          "median_us": 351.444,
+          "p95_us": 449.992
+        },
+        "4": {
+          "median_us": 351.444,
+          "p95_us": 370.442
+        }
+      },
+      "round": 3
+    }
+  ],
+  "summary": {
+    "main": {
+      "decode_validate": {
+        "median_us": 56.991,
+        "p95_us": 64.115
+      },
+      "output_consumers": {
+        "1": {
+          "median_us": 331.85400000000004,
+          "p95_us": 349.069
+        },
+        "2": {
+          "median_us": 674.393,
+          "p95_us": 726.635
+        },
+        "4": {
+          "median_us": 1334.539,
+          "p95_us": 1403.403
+        }
+      }
+    },
+    "current": {
+      "decode_validate": {
+        "median_us": 54.617,
+        "p95_us": 61.741
+      },
+      "output_consumers": {
+        "1": {
+          "median_us": 341.946,
+          "p95_us": 366.88
+        },
+        "2": {
+          "median_us": 343.133,
+          "p95_us": 365.692
+        },
+        "4": {
+          "median_us": 344.32,
+          "p95_us": 365.692
+        }
+      }
+    }
+  },
+  "production_python": {
+    "main": {
+      "files": 10,
+      "lines": 3223
+    },
+    "current": {
+      "files": 14,
+      "lines": 3805
+    }
+  },
+  "video": {
+    "reference_wait_quest_fps": 27.831787122937612,
+    "reference_wait_window_s": 36.002,
+    "frozen_quest_fps": 59.96110030564045,
+    "frozen_quest_window_s": 17.995,
+    "frozen_native_fps": 59.95154691579738,
+    "frozen_native_window_s": 32.542946769,
+    "main_video_fps": "not measured in this comparison"
+  },
+  "source_pixels_per_eye": {
+    "main_declared_720p": 921600,
+    "opentv_default_and_frozen": 460080
+  }
+}

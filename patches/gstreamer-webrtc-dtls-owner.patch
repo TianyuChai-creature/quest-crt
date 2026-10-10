@@ -1,0 +1,10 @@
+--- a/ext/webrtc/transportstream.c
++++ b/ext/webrtc/transportstream.c
+@@ -207,6 +207,7 @@
+   GstWebRTCICETransport *ice_trans;
+ 
+   stream->transport = gst_webrtc_dtls_transport_new (stream->session_id);
++  gst_object_ref_sink (stream->transport);
+ 
+   webrtc = GST_WEBRTC_BIN (gst_object_get_parent (GST_OBJECT (object)));
+ 

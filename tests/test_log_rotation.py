@@ -3,11 +3,25 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from server import AsyncPoseLog, LogRetentionManager, RotatingPoseLog
+from quest_xr_bridge.pose_log import AsyncPoseLog, LogRetentionManager, RotatingPoseLog
 
 
 class RotatingPoseLogTests(unittest.TestCase):
+    def test_writer_thread_start_failure_closes_file_and_retention_entry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            retention = LogRetentionManager(Path(directory), max_bytes=1000)
+            with (
+                patch(
+                    "quest_xr_bridge.pose_log.threading.Thread.start",
+                    side_effect=RuntimeError("thread unavailable"),
+                ),
+                self.assertRaises(RuntimeError),
+            ):
+                AsyncPoseLog(Path(directory), "failed", retention)
+            self.assertFalse(retention._active)
+
     def test_async_log_serializes_records_on_background_thread(self) -> None:
         with tempfile.TemporaryDirectory() as temporary_directory:
             directory = Path(temporary_directory)

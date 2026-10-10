@@ -3,7 +3,7 @@ from __future__ import annotations
 import unittest
 from math import cos, pi, sin
 
-from quest_crt.coordinates import (
+from quest_xr_bridge.coordinates import (
     COORDINATE_PRESETS,
     DEFAULT_COORDINATE_PRESET,
     flip_axis,
@@ -34,7 +34,7 @@ class CoordinateTransformTests(unittest.TestCase):
 
         self.assertEqual(set(COORDINATE_PRESETS), {"body", "webxr", "rfu", "flu"})
         self.assertEqual(COORDINATE_PRESETS["body"].apply(point), (1.0, 2.0, 3.0))
-        # body -> WebXR axis remap (Z forward-ish conventions from Pose v4 body)
+        # Body -> WebXR axis remap from the pose v5 body convention.
         self.assertEqual(COORDINATE_PRESETS["webxr"].apply(point), (3.0, 2.0, -1.0))
         self.assertEqual(COORDINATE_PRESETS["rfu"].apply(point), (3.0, 1.0, 2.0))
         self.assertEqual(COORDINATE_PRESETS["flu"].apply(point), (1.0, -3.0, 2.0))
@@ -103,7 +103,7 @@ class CoordinateTransformTests(unittest.TestCase):
         wrist_orientation = [0.0, 0.0, sin(half_turn), cos(half_turn)]
         source = {
             "type": "pose",
-            "version": 2,
+            "version": 5,
             "hands": {
                 "left": {
                     "tracked": True,

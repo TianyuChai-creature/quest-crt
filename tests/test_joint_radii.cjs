@@ -5,7 +5,7 @@ const path = require("node:path")
 const vm = require("node:vm")
 const packets = []
 
-for (const file of ["static/index.html", "cloudxr/qcrt-exporter.js"]) {
+for (const file of ["static/index.html"]) {
   const source = fs.readFileSync(path.join(__dirname, "..", file), "utf8")
   function between(start, end) {
     const left = source.indexOf("function " + start + "(")
@@ -46,7 +46,7 @@ for (const file of ["static/index.html", "cloudxr/qcrt-exporter.js"]) {
   context.transformPointToBodyFrame = p => p
   context.transformOrientationToBodyFrame = q => q
   vm.runInContext(between("transformHandToBodyFrame", "encodePosePacket") +
-    between("encodePosePacket", file.startsWith("static") ? "multiplyMatrices" : "makePacket"), context)
+    between("encodePosePacket", "multiplyMatrices"), context)
   const transformed = vm.runInContext("transformHandToBodyFrame", context)(hand, {})
   assert.deepEqual(transformed.radii, hand.radii)
   const missing = read(frame, null, {})
@@ -56,12 +56,13 @@ for (const file of ["static/index.html", "cloudxr/qcrt-exporter.js"]) {
     timestamp_ms: 100, capture_epoch_ms: 1000,
     hands: { left: transformed, right: missing },
     elbows: { left: joint, right: joint }, shoulders: { left: joint, right: joint },
-    head: { tracked: true, yaw_deg: 30, pitch_deg: -20 }, video_return: false,
+    head: { tracked: true, yaw_deg: 30, pitch_deg: -20 },
   }
   const bytes = vm.runInContext("encodePosePacket", context)(packet)
   const view = new DataView(bytes)
   assert.equal(bytes.byteLength, 804)
   assert.equal(view.getUint8(4), 5)
+  assert.equal(view.getUint8(5) & 0x80, 0)
   assert(Math.abs(view.getFloat32(636 + 8 * 4, true) - 0.008) < 1e-8)
   assert(Number.isNaN(view.getFloat32(636 + 21 * 4, true)))
   packets.push(Buffer.from(bytes).toString("base64"))

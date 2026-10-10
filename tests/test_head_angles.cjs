@@ -4,7 +4,7 @@ const fs = require("node:fs")
 const path = require("node:path")
 const vm = require("node:vm")
 
-for (const file of ["static/index.html", "cloudxr/qcrt-exporter.js"]) {
+for (const file of ["static/index.html"]) {
   const source = fs.readFileSync(path.join(__dirname, "..", file), "utf8")
   function between(start, end) {
     const left = source.indexOf("function " + start + "(")
@@ -41,7 +41,7 @@ for (const file of ["static/index.html", "cloudxr/qcrt-exporter.js"]) {
   assert.equal(missing.yaw_deg, null)
 
   vm.runInContext(
-    between("encodePosePacket", file.startsWith("static") ? "multiplyMatrices" : "makePacket"),
+    between("encodePosePacket", "multiplyMatrices"),
     context
   )
   const hand = { tracked: false, points: Array(21).fill(null), wrist_orientation: null }
@@ -63,6 +63,6 @@ for (const file of ["static/index.html", "cloudxr/qcrt-exporter.js"]) {
   near(view.getFloat32(632, true), -20)
   packet.video_return = true
   const videoView = new DataView(vm.runInContext("encodePosePacket", context)(packet))
-  assert.equal(videoView.getUint8(5), (1 << 6) | (1 << 7))
+  assert.equal(videoView.getUint8(5), 1 << 6)
 }
 console.log("Head angle and packet checks passed")

@@ -3,7 +3,7 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Quest CRT · Body Pose Capture</title>
+    <title>Quest XR Bridge · Body Pose Capture</title>
     <style>
       :root {
         color-scheme: dark;
@@ -192,6 +192,28 @@
         transform: translateX(20px);
       }
 
+      .video-settings {
+        margin-top: 14px;
+        padding: 14px;
+        border: 1px solid #ffffff17;
+        border-radius: 12px;
+      }
+
+      .video-settings summary { cursor: pointer; color: #cbd5e1; }
+      .video-settings form { display: grid; gap: 10px; margin-top: 14px; }
+      .video-settings label { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      .video-settings input[type="number"] {
+        width: 100px;
+        padding: 8px;
+        border: 1px solid #ffffff26;
+        border-radius: 6px;
+        background: #101114;
+        color: inherit;
+        font: inherit;
+      }
+      .video-settings button { margin-top: 0; padding: 10px; }
+      .video-settings p { margin: 0; font-size: 12px; }
+
       #xr-canvas {
         position: fixed;
         width: 1px;
@@ -203,30 +225,50 @@
   </head>
   <body>
     <main>
-      <div class="eyebrow">Quest CRT · Operator link</div>
+      <div class="eyebrow">Quest XR Bridge · Operator link</div>
       <h1>Body pose capture</h1>
       <p>
         Streams 21 landmarks per hand plus shoulder and elbow positions to the PC in the upper-back body frame.
-        Pose is the primary function; enable ZED video only when visual feedback is needed.
+        Enable an external camera when visual feedback is needed. Pose capture continues independently.
       </p>
 
       <div class="modes">
         <div class="mode">
           <div>
             <strong>Body pose stream</strong>
-            <small>Hands, shoulders, elbows · low-latency QCRT</small>
+            <small>Hands, shoulders, elbows and head</small>
           </div>
           <span class="primary-tag">Always on</span>
         </div>
         <label class="mode video-mode" for="video-mode">
           <div>
             <strong>Video return</strong>
-            <small>ZED Mini · 720p60 · opens the video prep page</small>
+            <small>Mono or stereo camera · shown inside this XR session</small>
           </div>
           <input id="video-mode" type="checkbox" />
           <span class="switch" aria-hidden="true"></span>
         </label>
       </div>
+
+      <details class="video-settings">
+        <summary>Camera display settings</summary>
+        <form id="video-settings">
+          <label>Projection<select name="projection"><option value="camera">Calibrated camera rays</option><option value="plane">Head-following video plane</option></select></label>
+          <label>Plane height (m)<input name="height_m" type="number" min="0.05" max="100" step="0.05" value="1" required /></label>
+          <label>Plane distance (m)<input name="distance_m" type="number" min="0.05" max="100" step="0.05" value="1" required /></label>
+          <label>Plane aspect (blank = source)<input name="aspect_ratio" type="number" min="0.1" max="10" step="any" /></label>
+          <label>Plane horizontal offset (m)<input name="offset_x_m" type="number" min="-100" max="100" step="0.05" value="0" required /></label>
+          <label>Plane vertical offset (m)<input name="offset_y_m" type="number" min="-100" max="100" step="0.05" value="0" required /></label>
+          <label>Saturation (1 = original)<input name="saturation" type="number" min="0" max="2" step="0.05" value="1" required /></label>
+          <label>Gamma (1 = original)<input name="gamma" type="number" min="0.5" max="2" step="0.05" value="1" required /></label>
+          <label>Swap left / right eyes<input name="swap_eyes" type="checkbox" /></label>
+          <p>Plane settings control the display surface, not camera focus or object distance. Camera-ray projection uses calibrated intrinsics instead. Both eyes share the same color settings.</p>
+          <button type="submit">Apply camera settings</button>
+          <p id="video-settings-status" role="status"></p>
+        </form>
+      </details>
+
+      <label><input id="tracking-guides" type="checkbox" /> Show tracking guides over camera video</label>
 
       <button id="enter-xr" disabled>Waiting for PC</button>
       <p class="hint" id="prep-hint">
@@ -241,6 +283,8 @@
         <span class="value" id="session-phase">idle</span>
         <span>WebXR</span>
         <span class="value" id="xr-status">idle</span>
+        <span>Camera</span>
+        <span class="value" id="video-status" role="status">off</span>
         <span>Sent</span>
         <span class="value" id="sent-count">0</span>
         <span>Local drops</span>
@@ -251,6 +295,8 @@
     <canvas id="xr-canvas"></canvas>
 
     <script type="module">
+      import { VideoReturn, waitForIceGathering, offerError } from "/static/video.js"
+
       const HAND_JOINTS = [
         "wrist",
         "thumb-metacarpal",
@@ -313,7 +359,6 @@
       const BINARY_PACKET_SIZE = 804
       const BODY_FRAME_EPSILON = 1e-6
       const RTC_PACKET_LIFETIME_MS = 30
-      const WS_MAX_BUFFERED_BYTES = 16 * 1024
       /** Scheme A: single click → XR → countdown (no pose) → auto stream. No second click. */
       const PREP_COUNTDOWN_S = 3
       const PREP_HINT =
@@ -326,14 +371,33 @@
       const dropCount = document.querySelector("#drop-count")
       const prepHintEl = document.querySelector("#prep-hint")
       const videoMode = document.querySelector("#video-mode")
+      const trackingGuides = document.querySelector("#tracking-guides")
+      const videoSettings = document.querySelector("#video-settings")
+      const videoSettingsStatus = document.querySelector("#video-settings-status")
+      const videoReturn = new VideoReturn({
+        onStatus(status) { document.querySelector("#video-status").textContent = status },
+        onConfig(snapshot) {
+          if (videoSettings.contains(document.activeElement)) return
+          const display = snapshot.display
+          for (const name of ["saturation", "gamma", "height_m", "distance_m", "offset_x_m", "offset_y_m"]) {
+            videoSettings.elements[name].value = display[name]
+          }
+          videoSettings.elements.projection.value = display.projection
+          videoSettings.elements.aspect_ratio.value = display.aspect_ratio ?? ""
+          videoSettings.elements.swap_eyes.checked = display.swap_eyes
+        },
+      })
 
-      let socket = null
       let peerConnection = null
       let dataChannel = null
-      let transportKind = null
       let reconnectTimer = null
       let connectionAttempt = 0
       let xrSession = null
+      let xrRenderer = null
+      let xrGl = null
+      let xrEntering = false
+      let pageLeaving = false
+      let poseOfferAbort = null
       let sent = 0
       let dropped = 0
       let seq = 0
@@ -344,9 +408,7 @@
       let poseStreaming = false
 
       function transportIsOpen() {
-        return (
-          dataChannel?.readyState === "open" || socket?.readyState === WebSocket.OPEN
-        )
+        return dataChannel?.readyState === "open"
       }
 
       function setSessionPhase(phase) {
@@ -357,7 +419,7 @@
       function setConnectionStatus(value) {
         transportStatus.textContent = value
         const open = transportIsOpen()
-        enterButton.disabled = !open || xrSession !== null
+        enterButton.disabled = !open || xrSession !== null || xrEntering
         if (!xrSession) {
           if (!open) {
             enterButton.textContent = "Waiting for PC"
@@ -370,43 +432,24 @@
       }
 
       function closeCurrentTransport() {
+        connectionAttempt += 1
         const channel = dataChannel
         const peer = peerConnection
-        const ws = socket
+        poseOfferAbort?.abort()
+        poseOfferAbort = null
         dataChannel = null
         peerConnection = null
-        socket = null
-        transportKind = null
         try {
           channel?.close()
         } catch {}
         try {
           peer?.close()
         } catch {}
-        try {
-          ws?.close()
-        } catch {}
       }
 
       function scheduleReconnect() {
         clearTimeout(reconnectTimer)
-        reconnectTimer = setTimeout(connectTransport, 1000)
-      }
-
-      function waitForIceGathering(peer, timeoutMs = 4000) {
-        if (peer.iceGatheringState === "complete") return Promise.resolve()
-        return new Promise((resolve) => {
-          const timeout = setTimeout(done, timeoutMs)
-          function done() {
-            clearTimeout(timeout)
-            peer.removeEventListener("icegatheringstatechange", changed)
-            resolve()
-          }
-          function changed() {
-            if (peer.iceGatheringState === "complete") done()
-          }
-          peer.addEventListener("icegatheringstatechange", changed)
-        })
+        if (!pageLeaving) reconnectTimer = setTimeout(connectTransport, 1000)
       }
 
       function waitForDataChannelOpen(channel, timeoutMs = 8000) {
@@ -438,6 +481,8 @@
         })
         peerConnection = peer
         dataChannel = channel
+        const abort = new AbortController()
+        poseOfferAbort = abort
 
         peer.addEventListener("connectionstatechange", () => {
           if (peerConnection !== peer) return
@@ -456,18 +501,19 @@
         const response = await fetch("/api/webrtc/offer", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
+          signal: AbortSignal.any([abort.signal, AbortSignal.timeout(8000)]),
           body: JSON.stringify({
             sdp: peer.localDescription.sdp,
             type: peer.localDescription.type,
           }),
         })
-        if (!response.ok) throw new Error(`WebRTC offer rejected (${response.status})`)
+        if (!response.ok) throw await offerError(response, "Pose offer rejected")
         const answer = await response.json()
+        if (attempt !== connectionAttempt || pageLeaving) return
         await peer.setRemoteDescription(answer)
         await waitForDataChannelOpen(channel)
         if (attempt !== connectionAttempt) throw new Error("superseded connection")
 
-        transportKind = "webrtc"
         setConnectionStatus("WebRTC open")
         channel.addEventListener("close", () => {
           if (dataChannel !== channel) return
@@ -477,51 +523,19 @@
         })
       }
 
-      function connectWebSocket(attempt) {
-        if (attempt !== connectionAttempt) return
-        setConnectionStatus("WSS fallback connecting")
-        const scheme = location.protocol === "https:" ? "wss" : "ws"
-        const ws = new WebSocket(`${scheme}://${location.host}/ws`)
-        socket = ws
-
-        ws.onopen = () => {
-          if (socket !== ws) return
-          transportKind = "wss"
-          setConnectionStatus("WSS fallback open")
-        }
-        ws.onerror = () => {
-          if (socket === ws) setConnectionStatus("WSS fallback error")
-        }
-        ws.onclose = () => {
-          if (socket !== ws) return
-          socket = null
-          transportKind = null
-          setConnectionStatus("WSS fallback closed")
-          scheduleReconnect()
-        }
-      }
-
       async function connectTransport() {
+        if (pageLeaving) return
         clearTimeout(reconnectTimer)
-        connectionAttempt += 1
-        const attempt = connectionAttempt
         closeCurrentTransport()
-        if (new URLSearchParams(location.search).get("transport") === "wss") {
-          connectWebSocket(attempt)
-          return
-        }
+        const attempt = ++connectionAttempt
         setConnectionStatus("WebRTC connecting")
         try {
           await connectWebRTC(attempt)
         } catch (error) {
           if (attempt !== connectionAttempt) return
-          try {
-            dataChannel?.close()
-            peerConnection?.close()
-          } catch {}
-          dataChannel = null
-          peerConnection = null
-          connectWebSocket(attempt)
+          closeCurrentTransport()
+          setConnectionStatus(`WebRTC: ${error.message}`)
+          scheduleReconnect()
         }
       }
 
@@ -534,15 +548,12 @@
           if (!pose) return null
           const { x, y, z } = pose.transform.position
           const orientation = pose.transform.orientation
+          const rotation = [orientation.x, orientation.y, orientation.z, orientation.w]
+          if (![x, y, z, ...rotation].every(Number.isFinite) || !rotation.some(value => value !== 0)) return null
           return {
             position: [x, y, z],
             radius: Number.isFinite(pose.radius) && pose.radius >= 0 ? pose.radius : null,
-            orientation: [
-              orientation.x,
-              orientation.y,
-              orientation.z,
-              orientation.w,
-            ],
+            orientation: rotation,
           }
         } catch {
           return null
@@ -753,7 +764,6 @@
         if (packet.shoulders.left.tracked) flags |= 1 << 4
         if (packet.shoulders.right.tracked) flags |= 1 << 5
         if (packet.head.tracked) flags |= 1 << 6
-        if (packet.video_return) flags |= 1 << 7
         view.setUint8(offset++, flags)
         view.setUint16(offset, 0, true)
         offset += 2
@@ -809,7 +819,8 @@
         return result
       }
 
-      function createXRRenderer(gl, session) {
+      function createXRRenderer(gl, glLayer, viewerSpace) {
+        const shaders = []
         const vertexSource = `#version 300 es
           in vec3 aPosition;
           in vec3 aColor;
@@ -836,6 +847,7 @@
 
         function compileShader(type, source) {
           const shader = gl.createShader(type)
+          shaders.push(shader)
           gl.shaderSource(shader, source)
           gl.compileShader(shader)
           if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
@@ -974,7 +986,7 @@
           hudCtx.font = "bold 280px ui-sans-serif, system-ui, sans-serif"
           hudCtx.textAlign = "center"
           hudCtx.textBaseline = "middle"
-          hudCtx.fillText(String(countdownSec), w / 2, h * 0.42)
+          if (countdownSec > 0) hudCtx.fillText(String(countdownSec), w / 2, h * 0.42)
           // hint
           hudCtx.fillStyle = "#e4e4e7"
           hudCtx.font = "600 42px ui-sans-serif, system-ui, sans-serif"
@@ -1058,6 +1070,13 @@
         let lastHudKey = ""
 
         return {
+          dispose() {
+            for (const shader of shaders) gl.deleteShader(shader)
+            for (const resource of [buffer, hudBuffer]) gl.deleteBuffer(resource)
+            gl.deleteTexture(hudTexture)
+            gl.deleteProgram(program)
+            gl.deleteProgram(hudProgram)
+          },
           render(
             frame,
             referenceSpace,
@@ -1069,46 +1088,50 @@
             rightShoulder,
             hud
           ) {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, glLayer.framebuffer)
+            gl.disable(gl.SCISSOR_TEST)
+            gl.colorMask(true, true, true, true)
+            gl.depthMask(true)
+            gl.clearColor(0, 0, 0, 1)
+            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
             const viewerPose = frame.getViewerPose(referenceSpace)
             if (!viewerPose) return
+            const cameraPose = frame.getViewerPose(viewerSpace)
 
             const lineVertices = []
             const pointVertices = []
-            addHand(lineVertices, pointVertices, leftPoints, XR_COLORS.left)
-            addHand(lineVertices, pointVertices, rightPoints, XR_COLORS.right)
-            addElbow(
-              lineVertices,
-              pointVertices,
-              leftElbow,
-              leftPoints[0],
-              XR_COLORS.leftElbow
-            )
-            addElbow(
-              lineVertices,
-              pointVertices,
-              rightElbow,
-              rightPoints[0],
-              XR_COLORS.rightElbow
-            )
-            addShoulder(
-              lineVertices,
-              pointVertices,
-              leftShoulder,
-              leftElbow,
-              XR_COLORS.leftShoulder
-            )
-            addShoulder(
-              lineVertices,
-              pointVertices,
-              rightShoulder,
-              rightElbow,
-              XR_COLORS.rightShoulder
-            )
-
-            const baseLayer = session.renderState.baseLayer
-            gl.bindFramebuffer(gl.FRAMEBUFFER, baseLayer.framebuffer)
-            gl.clearColor(0, 0, 0, 0)
-            gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT)
+            if (trackingGuides.checked || !videoMode.checked) {
+              addHand(lineVertices, pointVertices, leftPoints, XR_COLORS.left)
+              addHand(lineVertices, pointVertices, rightPoints, XR_COLORS.right)
+              addElbow(
+                lineVertices,
+                pointVertices,
+                leftElbow,
+                leftPoints[0],
+                XR_COLORS.leftElbow
+              )
+              addElbow(
+                lineVertices,
+                pointVertices,
+                rightElbow,
+                rightPoints[0],
+                XR_COLORS.rightElbow
+              )
+              addShoulder(
+                lineVertices,
+                pointVertices,
+                leftShoulder,
+                leftElbow,
+                XR_COLORS.leftShoulder
+              )
+              addShoulder(
+                lineVertices,
+                pointVertices,
+                rightShoulder,
+                rightElbow,
+                XR_COLORS.rightShoulder
+              )
+            }
 
             if (hud && hud.show) {
               const key = `${hud.countdown}|${hud.hint}`
@@ -1119,8 +1142,14 @@
             }
 
             for (const view of viewerPose.views) {
-              const viewport = baseLayer.getViewport(view)
+              const viewport = glLayer.getViewport(view)
               gl.viewport(viewport.x, viewport.y, viewport.width, viewport.height)
+              const cameraView = cameraPose?.views.find(candidate => candidate.eye === view.eye)
+              if (cameraView) videoReturn.renderView(view, cameraView)
+              gl.enable(gl.DEPTH_TEST)
+              gl.enable(gl.BLEND)
+              gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA)
+              gl.depthMask(true)
               const viewProjection = multiplyMatrices(
                 view.projectionMatrix,
                 view.transform.inverse.matrix
@@ -1128,72 +1157,96 @@
               drawVertices(lineVertices, gl.LINES, viewProjection, false)
               drawVertices(pointVertices, gl.POINTS, viewProjection, true)
               if (hud && hud.show) {
-                drawHudQuad(viewProjection, view.transform.matrix)
+                drawHudQuad(viewProjection, viewerPose.transform.matrix)
               }
             }
           },
         }
       }
 
+      function cleanupXR(session) {
+        if (xrSession !== session) return
+        xrSession = null
+        poseStreaming = false
+        prepDeadlineMs = 0
+        videoReturn.setSession(null)
+        xrRenderer?.dispose()
+        xrRenderer = null
+        xrGl?.getExtension("WEBGL_lose_context")?.loseContext()
+        xrGl = null
+        xrStatus.textContent = "ended"
+        setSessionPhase(transportIsOpen() ? "ready" : "idle")
+        enterButton.disabled = !transportIsOpen()
+        enterButton.textContent = transportIsOpen() ? "Prep again" : "Waiting for PC"
+        if (prepHintEl) prepHintEl.classList.remove("hidden")
+      }
+
       async function enterXR() {
+        if (xrSession || xrEntering || pageLeaving) return
         if (!navigator.xr) {
           xrStatus.textContent = "unsupported"
           return
         }
 
+        let session = null
+        xrEntering = true
+        enterButton.disabled = true
         try {
-          const supported = await navigator.xr.isSessionSupported("immersive-ar")
+          const supported = await navigator.xr.isSessionSupported("immersive-vr")
           if (!supported) {
-            xrStatus.textContent = "immersive-ar unsupported"
+            xrStatus.textContent = "immersive-vr unsupported"
             return
           }
 
           xrStatus.textContent = "requesting"
-          const session = await navigator.xr.requestSession("immersive-ar", {
-            requiredFeatures: ["local-floor", "hand-tracking"],
-            optionalFeatures: ["body-tracking"],
+          session = await navigator.xr.requestSession("immersive-vr", {
+            requiredFeatures: ["local-floor", "hand-tracking", "body-tracking"],
           })
+          if (pageLeaving) {
+            await session.end()
+            return
+          }
           xrSession = session
+          session.addEventListener("end", () => cleanupXR(session), { once: true })
           enterButton.disabled = true
           poseStreaming = false
           setSessionPhase("preparing")
           prepDeadlineMs = performance.now() + PREP_COUNTDOWN_S * 1000
           if (prepHintEl) prepHintEl.classList.add("hidden")
 
-          const canvas = document.querySelector("#xr-canvas")
+          const canvas = document.createElement("canvas")
+          canvas.id = "xr-canvas"
+          document.querySelector("#xr-canvas").replaceWith(canvas)
           const gl = canvas.getContext("webgl2", {
             xrCompatible: true,
-            alpha: true,
+            alpha: false,
             antialias: false,
           })
           if (!gl) throw new Error("WebGL2 is unavailable")
+          xrGl = gl
           if (gl.makeXRCompatible) await gl.makeXRCompatible()
-
-          session.updateRenderState({
-            baseLayer: new XRWebGLLayer(session, gl),
+          const glLayer = new XRWebGLLayer(session, gl, {
+            alpha: false, antialias: false, ignoreDepthValues: true,
           })
+          glLayer.fixedFoveation = 0
+          session.updateRenderState({ baseLayer: glLayer })
           const referenceSpace = await session.requestReferenceSpace("local-floor")
-          const renderer = createXRRenderer(gl, session)
+          const viewerSpace = await session.requestReferenceSpace("viewer")
+          if (xrSession !== session) return
+          const renderer = createXRRenderer(gl, glLayer, viewerSpace)
+          xrRenderer = renderer
+          videoReturn.setSession(session, glLayer, viewerSpace, gl)
           const sessionId = crypto.randomUUID()
           seq = 0
           sent = 0
           dropped = 0
           xrStatus.textContent = "running"
 
-          session.addEventListener("end", () => {
-            xrSession = null
-            poseStreaming = false
-            prepDeadlineMs = 0
-            xrStatus.textContent = "ended"
-            setSessionPhase(transportIsOpen() ? "ready" : "idle")
-            enterButton.disabled = !transportIsOpen()
-            enterButton.textContent = transportIsOpen() ? "Prep again" : "Waiting for PC"
-            if (prepHintEl) prepHintEl.classList.remove("hidden")
-          })
-
           function onXRFrame(timestamp, frame) {
             if (xrSession !== session) return
             session.requestAnimationFrame(onXRFrame)
+            videoReturn.tick()
+            videoReturn.beginFrame(frame, frame.getViewerPose(viewerSpace))
 
             const sources = Array.from(session.inputSources)
             const leftSource = sources.find(
@@ -1241,6 +1294,9 @@
               body?.get("right-scapula"),
               referenceSpace
             )
+            const bodyCoordinateFrame = createUpperBackBodyFrame(
+              upperBack, leftScapula, rightScapula
+            )
 
             // Scheme A: countdown before any pose leaves the headset
             const nowMs = performance.now()
@@ -1266,7 +1322,7 @@
               rightShoulder,
               inPrep
                 ? { show: true, countdown: countdownSec, hint: PREP_HINT }
-                : { show: false }
+                : { show: !bodyCoordinateFrame, countdown: 0, hint: "Body tracking unavailable\nKeep your upper body in view" }
             )
 
             // Do not send poses until countdown finished (hands free to pose)
@@ -1281,20 +1337,18 @@
             }
 
             const rtc = dataChannel?.readyState === "open" ? dataChannel : null
-            const ws = socket?.readyState === WebSocket.OPEN ? socket : null
-            if (!rtc && !ws) return
-            const bodyCoordinateFrame = createUpperBackBodyFrame(
-              upperBack,
-              leftScapula,
-              rightScapula
-            )
-            if (!bodyCoordinateFrame) return
+            if (!rtc) return
+            if (!bodyCoordinateFrame) {
+              xrStatus.textContent = "Body tracking unavailable"
+              setSessionPhase("tracking-missing")
+              return
+            }
+            if (sessionPhase === "tracking-missing") {
+              setSessionPhase("streaming")
+              xrStatus.textContent = "streaming"
+            }
             const frameSeq = ++seq
-            const bufferedAmount = rtc?.bufferedAmount ?? ws?.bufferedAmount ?? 0
-            const transportIsBackpressured = rtc
-              ? bufferedAmount > 0
-              : bufferedAmount >= WS_MAX_BUFFERED_BYTES
-            if (transportIsBackpressured) {
+            if (rtc.bufferedAmount > 0) {
               dropped += 1
               return
             }
@@ -1309,7 +1363,6 @@
               reference_space: "spine-upper-scapula",
               units: "meters",
               head: readHead(frame, referenceSpace, bodyCoordinateFrame),
-              video_return: false,
               hands: {
                 left: transformHandToBodyFrame(leftHand, bodyCoordinateFrame),
                 right: transformHandToBodyFrame(rightHand, bodyCoordinateFrame),
@@ -1335,11 +1388,7 @@
                 },
               },
             }
-            if (rtc) {
-              rtc.send(encodePosePacket(packet))
-            } else {
-              ws.send(JSON.stringify(packet))
-            }
+            rtc.send(encodePosePacket(packet))
             sent += 1
 
             if (timestamp - lastUiUpdate >= 250) {
@@ -1351,38 +1400,59 @@
 
           session.requestAnimationFrame(onXRFrame)
         } catch (error) {
-          xrSession = null
-          poseStreaming = false
-          prepDeadlineMs = 0
-          xrStatus.textContent = `error: ${error instanceof Error ? error.message : error}`
+          if (session) {
+            try { await session.end() } catch {}
+            cleanupXR(session)
+          }
+          xrStatus.textContent = `XR start failed: ${error instanceof Error ? error.message : error}`
           setSessionPhase(transportIsOpen() ? "ready" : "idle")
           enterButton.disabled = !transportIsOpen()
           enterButton.textContent = transportIsOpen() ? "Start prep" : "Waiting for PC"
           if (prepHintEl) prepHintEl.classList.remove("hidden")
+        } finally {
+          xrEntering = false
+          enterButton.disabled = !transportIsOpen() || xrSession !== null || pageLeaving
         }
       }
 
-      videoMode.addEventListener("change", async () => {
-        if (videoMode.checked) {
-          try {
-            const response = await fetch("/api/video-host", { cache: "no-store" })
-            if (!response.ok || !(await response.json()).enabled) throw new Error("PC video off")
-          } catch {
-            videoMode.checked = false
-            xrStatus.textContent = "请先在 PC 工作台开启相机画面"
-            return
-          }
-          if (!videoMode.checked) return
-          const videoUrl = new URL(
-            `${location.protocol}//${location.hostname}:48322/client/`
-          )
-          videoUrl.searchParams.set("panelHiddenAtStart", "true")
-          videoUrl.searchParams.set("controllerModelVisibility", "hide")
-          videoUrl.searchParams.set("showTraceInXR", "false")
-          videoUrl.searchParams.set("showRecordingControls", "false")
-          videoUrl.searchParams.set("autoRefreshMode", "never")
-          location.href = videoUrl
+      videoMode.addEventListener("change", () => videoReturn.setEnabled(videoMode.checked))
+      videoSettings.addEventListener("submit", async event => {
+        event.preventDefault()
+        const button = videoSettings.querySelector("button")
+        button.disabled = true
+        videoSettingsStatus.textContent = "Applying…"
+        try {
+          await videoReturn.configure({
+            saturation: videoSettings.elements.saturation.valueAsNumber,
+            gamma: videoSettings.elements.gamma.valueAsNumber,
+            projection: videoSettings.elements.projection.value,
+            height_m: videoSettings.elements.height_m.valueAsNumber,
+            distance_m: videoSettings.elements.distance_m.valueAsNumber,
+            aspect_ratio: videoSettings.elements.aspect_ratio.value === "" ? null : videoSettings.elements.aspect_ratio.valueAsNumber,
+            offset_x_m: videoSettings.elements.offset_x_m.valueAsNumber,
+            offset_y_m: videoSettings.elements.offset_y_m.valueAsNumber,
+            swap_eyes: videoSettings.elements.swap_eyes.checked,
+          })
+          videoSettingsStatus.textContent = "Camera settings applied"
+        } catch (error) {
+          videoSettingsStatus.textContent = error.message
+        } finally {
+          button.disabled = false
         }
+      })
+      window.addEventListener("pagehide", () => {
+        pageLeaving = true
+        clearTimeout(reconnectTimer)
+        closeCurrentTransport()
+        const session = xrSession
+        if (session) {
+          cleanupXR(session)
+          session.end().catch(() => {})
+        }
+        videoReturn.close()
+      })
+      window.addEventListener("pageshow", event => {
+        if (event.persisted) location.reload()
       })
       enterButton.addEventListener("click", enterXR)
       connectTransport()

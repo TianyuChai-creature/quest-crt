@@ -318,7 +318,7 @@
         </div>
       </header>
       <div class="coordinates-body" id="coordinates-body">
-        <div class="coordinates-note">Waiting for 8001 /ws pose frames…</div>
+        <div class="coordinates-note">Waiting for fresh pose frames…</div>
       </div>
     </aside>
 
@@ -429,6 +429,24 @@
       let lastFrameReceivedAt = null
       let lastCoordinatesRender = -Infinity
 
+      function clearPose(status) {
+        frame = null
+        projectedPoints = []
+        lastFrameReceivedAt = null
+        framesThisInterval = 0
+        connectionText.textContent = status
+        sessionText.textContent = "—"
+        sequenceText.textContent = "—"
+        axesText.textContent = "—"
+        handednessText.textContent = "—"
+        fpsText.textContent = "0.0"
+        pointsText.textContent = "0 / 46"
+        coordinatesSeq.textContent = "—"
+        coordinatesBody.innerHTML = '<div class="coordinates-note">Waiting for fresh pose frames…</div>'
+        hoverLabel.style.display = "none"
+        hoverLabel.textContent = ""
+      }
+
       function resize() {
         const ratio = Math.min(window.devicePixelRatio || 1, 2)
         canvas.width = Math.round(innerWidth * ratio)
@@ -450,16 +468,16 @@
           }
         }
         ws.onerror = () => {
-          if (socket === ws) connectionText.textContent = "error"
+          if (socket === ws) clearPose("error")
         }
         ws.onclose = () => {
           if (socket !== ws) return
           socket = null
-          lastFrameReceivedAt = null
-          connectionText.textContent = "closed"
+          clearPose("closed")
           reconnectTimer = setTimeout(connect, 1000)
         }
         ws.onmessage = (event) => {
+          if (socket !== ws) return
           try {
             const nextFrame = JSON.parse(event.data)
             const coordinate = nextFrame.coordinate_transform
@@ -486,7 +504,7 @@
             updateTarget(coordinateChanged)
             if (coordinateChanged) resetView()
           } catch {
-            connectionText.textContent = "invalid frame"
+            clearPose("invalid frame")
           }
         }
       }
@@ -809,6 +827,8 @@
       }
 
       function draw() {
+        const now = performance.now()
+        if (lastFrameReceivedAt !== null && now - lastFrameReceivedAt > 250) clearPose("stale")
         context.clearRect(0, 0, innerWidth, innerHeight)
         const viewportWidth = sceneViewportWidth()
         const gradient = context.createRadialGradient(
@@ -862,14 +882,6 @@
         }
         pointsText.textContent = `${projectedPoints.length} / 46`
 
-        const now = performance.now()
-        if (
-          socket?.readyState === WebSocket.OPEN &&
-          lastFrameReceivedAt !== null &&
-          now - lastFrameReceivedAt > 250
-        ) {
-          connectionText.textContent = "stale"
-        }
         if (now - fpsIntervalStart >= 1000) {
           fpsText.textContent = (
             (framesThisInterval * 1000) /

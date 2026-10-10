@@ -4,7 +4,7 @@ import asyncio
 import threading
 import unittest
 
-from server import RelayUpdateNotifier
+from quest_xr_bridge.runtime import RelayUpdateNotifier
 
 
 class RelayUpdateNotifierTests(unittest.IsolatedAsyncioTestCase):

@@ -1,17 +1,18 @@
-"""Coordinate-system transformations for Quest CRT pose positions."""
+"""Coordinate-system transformations for Quest XR Bridge pose positions."""
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from copy import deepcopy
 from dataclasses import dataclass
 from types import MappingProxyType
-from typing import Any, Literal, Mapping, Sequence, TypeAlias
+from typing import Any, Literal
 
-AxisName: TypeAlias = Literal["x", "y", "z"]
-SignedAxis: TypeAlias = Literal["x", "-x", "y", "-y", "z", "-z"]
-Point3: TypeAlias = tuple[float, float, float]
-Quaternion: TypeAlias = tuple[float, float, float, float]
-Matrix3x3: TypeAlias = tuple[
+type AxisName = Literal["x", "y", "z"]
+type SignedAxis = Literal["x", "-x", "y", "-y", "z", "-z"]
+type Point3 = tuple[float, float, float]
+type Quaternion = tuple[float, float, float, float]
+type Matrix3x3 = tuple[
     tuple[float, float, float],
     tuple[float, float, float],
     tuple[float, float, float],
@@ -141,7 +142,7 @@ def transform_pose_frame(
     frame: Mapping[str, Any],
     transform: AxisTransform,
 ) -> dict[str, Any]:
-    """Return a transformed copy of a Quest CRT pose-frame dictionary.
+    """Return a transformed copy of a Quest XR Bridge pose-frame dictionary.
 
     Hand points, wrist orientations, elbow positions, and shoulder positions are transformed.
     ``None`` values and all protocol metadata remain unchanged.

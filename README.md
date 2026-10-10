@@ -1,285 +1,93 @@
-# Quest CRT
+# Quest XR Bridge 0.3.0
 
-> **Quest 人体姿态是主链路，ZED 立体视频按需开启。** 一个浏览器入口、一个 WebXR
-> 会话、两条彼此隔离的数据管线。
+嵌入式 Quest 姿态与通用 RGB 视频 SDK。一个 `QuestServer` 对象管理 HTTPS 服务、
+姿态连接及可选视频进程；相机、机器人和云台由宿主程序控制。
 
-Quest CRT 从 Quest Browser 采集双手、肩和肘，在头显内构造稳定的人体坐标系，并向
-real-Teleop 与 DIME 提供低延迟、latest-only 的实时数据。需要现场视觉时，可在同一
-WebXR 会话中附加 ZED Mini → Televiz → CloudXR 视频；视频故障不会带停姿态服务。
+- 姿态：独立 aiortc WebRTC 数据连接，严格 QCRT v5 / 804 B，latest-only。
+- 视频：独立 GStreamer/NVENC WebRTC 媒体连接，成对 RGB 输入、单轨 SBS。
+- 同一 HTTPS 入口与 XRSession；视频故障不关闭姿态或 XR。
+- 通用 `/ws` 输出、Viewer、坐标配置、可选录制；无相机品牌依赖。
 
-| 能力 | 默认 | 稳定契约 |
-|---|---:|---|
-| 人体姿态上行 | 开启 | QCRT 804 B（含关节半径）WebRTC；WSS JSON 回退 |
-| real-Teleop 输出 | 开启 | `:8001/ws`，事件驱动 JSON |
-| DIME 传感流 | 开启 | `:8001/ws/stream`，90 Hz QSTR v1 |
-| ZED 视频回传 | **关闭** | 每眼 1280×720 @ 60 FPS，CloudXR |
+## 安装与启动
 
-## 架构
-
-```mermaid
-flowchart LR
-  subgraph PC[PC]
-    ZED[ZED Mini] -. 可选视频 .-> CV[camera_viz / Televiz]
-    CV --> CXR[CloudXR Runtime]
-
-    QCRT[Quest CRT :8000]
-    LATEST[latest-only pose]
-    VIEW[Viewer /ws]
-    STABLE[StablePoseStream /ws/stream]
-
-    QCRT --> LATEST
-    LATEST --> VIEW
-    LATEST --> STABLE
-  end
-
-  subgraph QUEST[Quest Browser · 单一 WebXR 会话]
-    UI[Quest CRT operator UI]
-    XR[hand + body tracking]
-    VIDEO[optional ZED layer]
-    UI --> XR
-    VIDEO --> XR
-  end
-
-  CXR -->|CloudXR.js video| VIDEO
-  XR -->|QCRT WebRTC / WSS| QCRT
-  VIEW --> REAL[real-Teleop]
-  STABLE --> DIME[DIME]
-```
-
-核心设计约束：
-
-- **姿态优先**：`:8000` 是产品入口；视频开关默认关闭。
-- **单会话**：视频模式复用 CloudXR.js 创建的同一个 `XRSession` 采集 QCRT，不创建
-  第二个沉浸式会话。
-- **故障隔离**：视频、相机、姿态服务和短时网络故障分别恢复，不互相绑定生命周期。
-- **薄适配**：不 vendoring NVIDIA Web Client、IsaacTeleop、Televiz 或 ZED SDK；构建时
-  只注入一个经过校验的 QCRT exporter。
-- **下游冻结**：原有 QCRT、QSTR、`/ws`、`/ws/stream`、坐标与 Python API 保持兼容。
-
-## 两种运行模式
-
-### 1. 姿态模式（默认）
-
-浏览器直接使用 Quest CRT 页面。唯一一次 **Start prep** 点击进入 XR，3 秒摆姿倒计时
-期间不发送数据；结束后自动开始上行。
-
-### 2. 姿态 + ZED 视频
-
-在主入口勾选 **Video return** 后立即进入同风格的视频准备页，再点击一次
-**Start prep**。与姿态模式相比，XR 中只增加 ZED 弧面视频层；NVIDIA 控制面板、控制器
-模型、轨迹和录制控件默认隐藏。原始 NVIDIA 页面仍可从 **Advanced settings** 打开。
-
-关闭视频开关会回到姿态模式。与 real-Teleop 工作台配合时，须先在 PC 工作台开启相机，再在 Quest 网页选择 Video return；若 PC 服务未就绪，网页会保留在姿态页并提示先启动。工作台关闭相机后，已打开的 CloudXR 页面仍可上传姿态，界面提示 PC camera off。
-
-## 快速开始
-
-### 基础要求
-
-- Python 3.13+
-- [`uv`](https://docs.astral.sh/uv/)
-- 支持 hand/body tracking 的 Quest Browser
-- Quest 与 PC 位于互通的局域网
+基础功能需要 Python 3.13+。从 [v0.3.0 Release](https://github.com/TianyuChai-creature/quest-xr-bridge/releases/tag/v0.3.0)
+下载 wheel 后安装：
 
 ```bash
-git clone git@github.com:TianyuChai-creature/quest-crt.git
-cd quest-crt
-uv sync
+python -m pip install quest_xr_bridge-0.3.0-py3-none-any.whl
+quest-xr-bridge
 ```
 
-### 只运行姿态
+Quest 打开 `https://<PC-IP>:8000/`；PC 查看 `https://<PC-IP>:8000/viewer`。
+接受开发证书后点击 **Start prep**，三秒准备结束开始发送姿态。
+需支持并允许 WebXR 手部及身体追踪的 Quest Browser。
 
-```bash
-uv run python server.py
-```
-
-也可以安装 [v0.2.0 wheel](https://github.com/TianyuChai-creature/quest-crt/releases/tag/v0.2.0)，无需克隆仓库：
-
-```bash
-uv venv --python 3.13 .venv
-uv pip install --python .venv/bin/python quest_crt-0.2.0-py3-none-any.whl
-.venv/bin/quest-crt
-```
-
-wheel 包含姿态服务和两张网页；证书、姿态及视频统计日志保存在启动目录的 `certs/`、`logs/`。
-可用 `uv build --wheel` 从本仓库复现构建，产物位于 `dist/`。CloudXR 视频组件仍需单独准备。
-
-终端会打印局域网地址：
-
-```text
-Quest page: https://<PC-IP>:8000/
-3D viewer:  https://<PC-IP>:8001/
-```
-
-在 Quest Browser 打开 `https://<PC-IP>:8000/`，首次访问接受开发证书，然后点击
-**Start prep**。PC 端可打开 `https://<PC-IP>:8001/` 查看 46 点 Viewer。
-
-### 启用 ZED + CloudXR
-
-额外要求：
-
-- NVIDIA GPU 与兼容驱动
-- ZED SDK、`pyzed`、CuPy
-- IsaacTeleop `examples/camera_viz` 的独立 `.venv`
-- CloudXR Runtime / CloudXR.js，并由使用者接受 NVIDIA CloudXR EULA
-
-```bash
-CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
-  ./scripts/run_cloudxr_zed.sh --check
-
-CAMERA_VIZ_DIR=/path/to/IsaacTeleop/examples/camera_viz \
-  ./scripts/run_cloudxr_zed.sh
-```
-
-启动器会：
-
-1. 从已安装的 NVIDIA Web Client 生成忽略于 Git 的 `.cloudxr-client/`；
-2. 校验官方 DOM 挂接点，并在 `bundle.js` 前注入 QCRT exporter；
-3. 重启本地 CloudXR host-client；
-4. 立即启动姿态服务并复用 CloudXR 证书；
-5. 等到用户真正完成 CloudXR `/sign_in` 后才创建 camera_viz OpenXR 应用；
-6. camera_viz 退出时继续保留姿态服务。
-
-最终验收配置见
-[`cloudxr/camera_viz_zed_60fps.yaml`](cloudxr/camera_viz_zed_60fps.yaml)：原生 ZED
-双目视差、头锁定 102° 弧面、每眼 1280×720 @ 60 FPS。
-
-## 稳定接口
-
-| 端口 | 路径 | 消费方 | 节奏 | 格式 |
-|---:|---|---|---|---|
-| 8000 | `/api/webrtc/offer` | Quest | 会话协商 | SDP JSON |
-| 8000 | WebRTC `pose` | Quest → PC | XR 帧驱动 | QCRT 804 B |
-| 8000 | `/ws` | Quest → PC 回退 | XR 帧驱动 | Pose JSON |
-| 8000 | `/health` | 运维 | 按需 | JSON |
-| 8000 | `/api/video-host` | Quest 网页 / 本机工作台 | 按需 | PC 视频可用状态；PUT 限本机 |
-| 8000/8001 | `/api/coordinate-transform` | 运维 | 按需 | JSON |
-| 8001 | `/ws` | real-Teleop / Viewer | 事件驱动 latest | JSON |
-| 8001 | `/ws/stream` | DIME | 固定 90 Hz | QSTR v1（二进制默认） |
-
-兼容保证：
-
-- 当前 804 字节 QCRT 与旧 604/628/636 字节帧都可解码；
-- Pose v5 增加头部 yaw/pitch；旧 Pose v2–v4 帧仍可接收；
-- `/ws` 输出身体坐标系的 `head: {tracked, yaw_deg, pitch_deg}` 和兼容用 `video_return` 字段，以及 shoulders、elbows、wrist pose 与每手 21 个腕部局部 landmarks；
-- CloudXR XR 会话先 `POST /api/video-presence/start`（session_id UUID）取得 lease_id，随后每秒 `POST /api/video-presence`（lease_id、seq、active）；结束时 active=false。heartbeat 不能创建租约或夺权；本机工作台通过 GET 读取 active/age_ms。health 的 video_presence 能力版本为2，并提供 boot_id；只有服务器重启后自动重新登记，被替换页面需重新进入XR；
-- `/ws/stream` 继续输出 `quality=ok|held|stale|lost` 的 QSTR v1；
-- `/ws/stream?version=2` 输出带关节半径的 QSTR v2，Python `decode_stream_envelope` 可解两版；
-- `quest_crt` 公共 Python 导出、坐标预设与二进制编解码 API 未改变；
-- WebRTC 不可用时仍自动回退到 WSS，下一次完整会话优先恢复 WebRTC。
-
-### 坐标语义
-
-Quest 同帧读取 `spine-upper` 与左右 `scapula`，构造以上背部为原点的右手坐标系：
-
-```text
-X = 前    Y = 上    Z = 右    单位 = 米
-```
-
-`:8001` 默认使用 `body` 预设，并将双手 21 点转换为各自腕部局部坐标；肩、肘、腕仍在
-人体坐标中。头部 yaw 向右为正、pitch 向上为正，均以身体坐标为准，不随 Viewer 坐标预设变化。详细数学定义与字段表见
-[`ENGINEERING_MANUAL.md`](ENGINEERING_MANUAL.md)。
-
-### 关节半径
-
-原始帧、JSONL、`/ws` 和 `/ws/stream?format=json` 的每手对象增加 `radii`，与该手
-21 点的 `points`／`landmarks` 顺序相同。值为米，缺失为 `null`；坐标转换不改变半径。
-例如 `hands.right.radii[8]` 是食指尖半径。旧发送端的输出半径均为 `null`。
+嵌入宿主程序，无需另外维护服务终端：
 
 ```python
-from quest_crt import decode_stream_envelope
+from quest_xr_bridge import QuestServer
 
-envelope = decode_stream_envelope(packet)  # packet 来自 /ws/stream?version=2
-if envelope["pose"] is not None:
-    hand = envelope["pose"]["hands"]["right"]
-    radius_m = hand["radii"][8]  # 判断 quality、tracked 与 None 后再使用
+with QuestServer() as service:
+    print(service.url)
+    # 在此运行宿主业务；离开上下文会关闭 SDK 自有资源。
 ```
 
-默认 QSTR v1／UDP 保持旧字节格式，不含半径；编码 v2 使用
-`encode_stream_envelope(envelope, version=2)`，自行构造 UDP 转发器时使用
-`UdpStreamPublisher(bus, version=2)`。半径由 WebXR `getJointPose().radius` 获取，是
-关节中心近似球体的皮肤半径，可能由运行时模拟，不是实际接触面积或位置误差。
+视频需额外部署 Linux/NVIDIA、GStreamer/GI 与本仓库的 WebRTC 引用修复；
+这些原生组件不包含在通用 Python wheel 中。缺少视频依赖不影响基础姿态功能。
 
-## 检查与测试
+## 本次冻结的显示效果
 
-Quest 已传数时：
+2026-10-10 用户实机确认 OK，冻结以下配置：
 
-```bash
-# 健康、WebRTC 与 90 Hz QSTR
-uv run python scripts/check_stream.py --seconds 5
-
-# 只读验证真实 /ws 与 /ws/stream 下游契约
-uv run python scripts/check_runtime_contracts.py --live
-```
-
-完整测试：
-
-浏览器采集测试需要 Node.js。
-
-```bash
-PYTHONPATH=. python -m unittest discover -s tests -v
-for test_file in tests/*.cjs; do node "$test_file"; done
-```
-
-测试固定了原有 HTTP/WSS 路由、604/628/636/804 字节 QCRT、QSTR v1/v2、半径空值与校验、坐标变换、latest-only、日志
-轮转、遥测和 CloudXR 注入边界。
-
-## 故障语义
-
-| 故障 | 预期行为 |
+| 项目 | 冻结值 |
 |---|---|
-| ZED 拔出 | 视频停止；camera_viz 每 2 秒重连；姿态继续 |
-| ZED 插回 | 无需重启，自动恢复 60 FPS |
-| camera_viz 退出 | 视频停止；`:8000` 姿态服务继续 |
-| quest-crt 重启 | 视频继续；姿态先以 WSS 恢复，完整重连优先 WebRTC |
-| Quest 短时断网 | QSTR 进入 held/stale/lost；网络恢复后两条链路自动恢复 |
-| CloudXR UI 结构变化 | `prepare_cloudxr_client.py` fail-fast，不生成半坏客户端 |
+| 输入采集 | 外部程序提供每眼 1280×720、60 FPS、同步校正 RGB |
+| 参考预处理 | 左右各裁1列、纵向隔行取样、JPEG quality=80 |
+| SDK 实际输入 | 每眼1278×360；单轨 SBS 为2556×360 |
+| 更新节奏 | 已取消原参考脚本的0.03秒等待，以新帧驱动、上限60 FPS |
+| 显示面 | 高8m、宽高比1.66667、前方7m、下方1m |
+| 色彩/眼序 | saturation=1、gamma=1、正常眼序 |
 
-## 配置
+参数为显式配置，不隐藏在相机驱动中。可从已安装的 wheel 导入通用示例：
 
-常用环境变量：
+```python
+from quest_xr_bridge import QuestServer
+from quest_xr_bridge.examples.frozen_stereo import start_frozen_video, prepare_eye
 
-| 变量 | 默认值 | 说明 |
-|---|---:|---|
-| `POSE_PORT` | `8000` | Quest、信令和上行 WSS |
-| `OUTPUT_PORT` | `8001` | Viewer 与下游流 |
-| `POSE_LOG_ENABLED` | `1` | JSONL 日志；一体化启动器默认设为 `0` |
-| `STREAM_HZ` | `90` | StablePoseStream 频率 |
-| `POSE_CERT_FILE` / `POSE_KEY_FILE` | 自动生成 | 必须成对设置的外部 TLS 文件 |
-| `CAMERA_VIZ_DIR` | 无 | IsaacTeleop camera_viz 目录 |
-| `CAMERA_CONFIG` | ZED 720p60 配置 | 一体化相机配置 |
-| `QUEST_WAIT_SECONDS` | `0` | 等待可选 CloudXR sign-in；`0` 为无限等待 |
-
-开发证书、JSONL、遥测字段、UDP 旁路和全部变量见工程手册。
-
-## 仓库结构
-
-```text
-quest-crt/
-├── server.py                  # FastAPI、WebRTC/WSS、latest ingress、日志
-├── quest_crt/                 # 稳定协议、坐标、流时钟与遥测
-├── static/                    # 姿态主入口与 PC Viewer
-├── cloudxr/                   # ZED 配置与同会话 QCRT exporter
-├── scripts/                   # 预检、启动与运行时契约检查
-├── tests/                     # 单元与公开接口回归
-├── ENGINEERING_MANUAL.md      # 字段级协议、部署与故障排查
-└── CLOUDXR_INTEGRATION_WORKFLOW.md  # H1–H6 实机验证记录
+# prepare_eye 的 JPEG 处理需要额外安装 Pillow：python -m pip install Pillow
+with QuestServer() as service:
+    start_frozen_video(service)
+    for left_rgb, right_rgb, timestamp_ns in your_camera_frame_pairs:
+        service.submit_video(prepare_eye(left_rgb), prepare_eye(right_rgb),
+                             timestamp_ns=timestamp_ns)
 ```
 
-## 文档与许可
+`your_camera_frame_pairs` 由宿主提供，须在其生命周期内采集同步、已校正的 RGB；
+示例不会打开相机。已经是1278×360的处理后 RGB 应直接提交，不要重复预处理。
+显示距离是虚拟平面的几何，不是相机焦距或真实物体距离。
 
-- [工程手册](ENGINEERING_MANUAL.md)：部署、字段级协议、JSONL、坐标和排障
-- [CloudXR + ZED 验证记录](CLOUDXR_INTEGRATION_WORKFLOW.md)：硬件、质量矩阵与 H1–H6
-- [Stereolabs ZED SDK](https://www.stereolabs.com/developers/)
-- [NVIDIA CloudXR](https://developer.nvidia.com/cloudxr-sdk)
-- [NVIDIA IsaacTeleop](https://github.com/NVIDIA/IsaacTeleop)
+当前视觉验收通过不等于完整720p60、长期无泄漏或所有网络故障均已验收。
+视频仍使用 NVENC/WebRTC，参考 JPEG 阶段后还会再次视频编码。
 
-本仓只保存自身代码、配置和薄适配器，不分发 CloudXR、IsaacTeleop、Televiz、ZED SDK
-或其模型/二进制。安装和使用这些组件前，请分别审阅并接受对应上游许可。
+## 文档
 
-## 项目边界
+- [使用与安装](docs/USAGE.md)：生命周期、RGB 接入、显示设置、原生依赖与迁移。
+- [SDK API参考](docs/API.md)：Python接口参数、返回值、异常和线程契约。
+- [工程手册](ENGINEERING_MANUAL.md)：职责边界、协议、背压、资源与错误处理。
+- [相对 main 的改造说明](docs/REFACTOR.md)：基线124ae02、决策及兼容性变化。
+- [冻结与验收结论](docs/ACCEPTANCE.md)：实测范围、冻结参数及未完成项。
+- [通用双目示例](examples/frozen_stereo.py)：与相机品牌无关的参考预处理。
 
-- 局域网开发部署默认无应用层鉴权；不要直接暴露到公网。
-- 当前只允许一个活动 Quest 姿态源，第二个源会被拒绝。
-- 不包含机器人控制器、安全停机策略或机械臂驱动；这些属于 real-Teleop。
-- 不包含 DIME 的 21→20 数据转换、训练和权重。
-- 传统姿态-only 页面始终保留，是视频链路不可用时的回滚路径。
+## 开发检查
+
+```bash
+uv sync
+uv run python -m unittest discover -s tests -v
+node --test tests/*.cjs
+uv run python scripts/check_runtime_contracts.py --ca certs/cert.pem --inject
+uv build --wheel
+```
+
+`--inject` 需要已启动服务且没有实际 Quest 占用姿态连接；验证固定协议与通用输出。
+实际 GPU 渲染回归需要 Node、Linux Mesa/EGL，否则该项明确跳过。
+本项目面向可信局域网；应用层鉴权和机器人安全控制由部署方负责。
