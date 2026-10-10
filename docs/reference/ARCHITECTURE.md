@@ -108,7 +108,7 @@ GStreamer 1.24 系列与较新版本 NVENC 属性名字存在区别；使用 wor
 插件包括 webrtcbin、nvh264enc、h264parse、rtph264pay、rtpgccbwe 与 ICE/DTLS/SCTP。
 Rust RTP 插件需单独准备；不能把 nvidia-smi 或 factory 注册成功当作实际编码证明。
 WebRTC 插件使用 1.24.13 或以上版本，并应用仓库
-[DTLS transport 引用补丁](patches/gstreamer-webrtc-dtls-owner.patch)。
+[DTLS transport 引用补丁](../../patches/gstreamer-webrtc-dtls-owner.patch)。
 在 gst-plugins-bad 源码根目录运行 `patch -p1 < /绝对路径/quest-xr-bridge/patches/gstreamer-webrtc-dtls-owner.patch`，
 构建时传入 Meson 参数 `-Dpackage-name='GStreamer Bad Plug-ins (quest-crt DTLS owner fix)'`。
 安装同一 patch 版本的 webrtc 插件及其 webrtc/webrtcnice/sctp 库；用运行时库、插件搜索路径选择它们。
@@ -199,8 +199,8 @@ SDK 构造参数显式配置，不从环境隐式拉起服务。录制每段最�
 
 ## 冻结与验证
 
-0.3.0的最终配置和验收范围统一见[冻结与验收](docs/ACCEPTANCE.md)，
-使用方式见[使用文档](docs/USAGE.md)，相对main的设计变化见[改造说明](docs/REFACTOR.md)。
+0.3.0的最终配置和验收范围统一见[冻结与验收](ACCEPTANCE.md)，
+使用方式见[使用文档](../USAGE.md)，相对main的设计变化见[改造说明](REFACTOR.md)。
 
 发布保留协议、坐标、生命周期、帧所有权、客户端新鲜度、实际GLSL渲染及清理回归。
 测试通过只证明对应契约；短时资源平稳不能证明长期无泄漏。

@@ -73,9 +73,9 @@ with QuestServer() as service:
 
 - [使用与安装](docs/USAGE.md)：生命周期、RGB 接入、显示设置、原生依赖与迁移。
 - [SDK API参考](docs/API.md)：Python接口参数、返回值、异常和线程契约。
-- [工程手册](ENGINEERING_MANUAL.md)：职责边界、协议、背压、资源与错误处理。
-- [相对 main 的改造说明](docs/REFACTOR.md)：基线124ae02、决策及兼容性变化。
-- [冻结与验收结论](docs/ACCEPTANCE.md)：实测范围、冻结参数及未完成项。
+- [工程手册](docs/reference/ARCHITECTURE.md)：职责边界、协议、背压、资源与错误处理。
+- [相对 main 的改造说明](docs/reference/REFACTOR.md)：基线124ae02、决策及兼容性变化。
+- [冻结与验收结论](docs/reference/ACCEPTANCE.md)：实测范围、冻结参数及未完成项。
 - [通用双目示例](examples/frozen_stereo.py)：与相机品牌无关的参考预处理。
 
 ## 开发检查
@@ -85,7 +85,7 @@ uv sync
 uv run python -m unittest discover -s tests -v
 node --test tests/*.cjs
 uv run python scripts/check_runtime_contracts.py --ca certs/cert.pem --inject
-uv build --wheel
+uv build --wheel --out-dir dist/v0.3.0
 ```
 
 `--inject` 需要已启动服务且没有实际 Quest 占用姿态连接；验证固定协议与通用输出。

@@ -201,4 +201,4 @@ your_mono_camera由宿主提供；左右眼都观看同一幅图，不提供真�
 AxisTransform提供matrix、determinant、changes_handedness只读属性，
 以及apply(point)、apply_orientation(quaternion)方法。常见输入错误抛ValueError或TypeError；纯数学工具不替代完整网络协议校验。
 姿态编码还可能向调用方返回pydantic.ValidationError（也是ValueError子类）。
-协议字段和字节偏移见[工程手册](../ENGINEERING_MANUAL.md)。
+协议字段和字节偏移见[工程手册](reference/ARCHITECTURE.md)。
